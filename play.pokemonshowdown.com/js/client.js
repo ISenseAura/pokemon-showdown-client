@@ -170,7 +170,7 @@ function toId() {
 						}
 					}
 					escaped = escaped.replace(/[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g, "\\$&");
-					escaped = escaped.replace(/,/g, "[^A-Za-z0-9]?");
+				//	escaped = escaped.replace(/,/g, "[^A-Za-z0-9]?");
 					self.nameRegExp = new RegExp('(?:\\b|(?!\\w))' + escaped + '(?:\\b|\\B(?!\\w))', 'i');
 				}
 			});
@@ -178,8 +178,8 @@ function toId() {
 				Storage.prefs('serversettings', self.get('settings'));
 			});
 
-			var replaceList = {'A': 'ＡⱯȺ', 'B': 'ＢƂƁɃ', 'C': 'ＣꜾȻ', 'D': 'ＤĐƋƊƉꝹ', 'E': 'ＥƐƎ', 'F': 'ＦƑꝻ', 'G': 'ＧꞠꝽꝾ', 'H': 'ＨĦⱧⱵꞍ', 'I': 'ＩƗ', 'J': 'ＪɈ', 'K': 'ＫꞢ', 'L': 'ＬꝆꞀ', 'M': 'ＭⱮƜ', 'N': 'ＮȠƝꞐꞤ', 'O': 'ＯǪǬØǾƆƟꝊꝌ', 'P': 'ＰƤⱣꝐꝒꝔ', 'Q': 'ＱꝖꝘɊ', 'R': 'ＲɌⱤꝚꞦꞂ', 'S': 'ＳẞꞨꞄ', 'T': 'ＴŦƬƮȾꞆ', 'U': 'ＵɄ', 'V': 'ＶƲꝞɅ', 'W': 'ＷⱲ', 'X': 'Ｘ', 'Y': 'ＹɎỾ', 'Z': 'ＺƵȤⱿⱫꝢ', 'a': 'ａąⱥɐ', 'b': 'ｂƀƃɓ', 'c': 'ｃȼꜿↄ', 'd': 'ｄđƌɖɗꝺ', 'e': 'ｅɇɛǝ', 'f': 'ｆḟƒꝼ', 'g': 'ｇɠꞡᵹꝿ', 'h': 'ｈħⱨⱶɥ', 'i': 'ｉɨı', 'j': 'ｊɉ', 'k': 'ｋƙⱪꝁꝃꝅꞣ', 'l': 'ｌſłƚɫⱡꝉꞁꝇ', 'm': 'ｍɱɯ', 'n': 'ｎƞɲŉꞑꞥ', 'o': 'ｏǫǭøǿɔꝋꝍɵ', 'p': 'ｐƥᵽꝑꝓꝕ', 'q': 'ｑɋꝗꝙ', 'r': 'ｒɍɽꝛꞧꞃ', 's': 'ｓꞩꞅẛ', 't': 'ｔŧƭʈⱦꞇ', 'u': 'ｕưừứữửựųṷṵʉ', 'v': 'ｖʋꝟʌ', 'w': 'ｗⱳ', 'x': 'ｘ', 'y': 'ｙɏỿ', 'z': 'ｚƶȥɀⱬꝣ', 'AA': 'Ꜳ', 'AE': 'ÆǼǢ', 'AO': 'Ꜵ', 'AU': 'Ꜷ', 'AV': 'ꜸꜺ', 'AY': 'Ꜽ', 'DZ': 'ǱǄ', 'Dz': 'ǲǅ', 'LJ': 'Ǉ', 'Lj': 'ǈ', 'NJ': 'Ǌ', 'Nj': 'ǋ', 'OI': 'Ƣ', 'OO': 'Ꝏ', 'OU': 'Ȣ', 'TZ': 'Ꜩ', 'VY': 'Ꝡ', 'aa': 'ꜳ', 'ae': 'æǽǣ', 'ao': 'ꜵ', 'au': 'ꜷ', 'av': 'ꜹꜻ', 'ay': 'ꜽ', 'dz': 'ǳǆ', 'hv': 'ƕ', 'lj': 'ǉ', 'nj': 'ǌ', 'oi': 'ƣ', 'ou': 'ȣ', 'oo': 'ꝏ', 'ss': 'ß', 'tz': 'ꜩ', 'vy': 'ꝡ'};
-			var normalizeList = {'A': 'ÀÁÂẦẤẪẨÃĀĂẰẮẴẲȦǠÄǞẢÅǺǍȀȂẠẬẶḀĄ', 'B': 'ḂḄḆ', 'C': 'ĆĈĊČÇḈƇ', 'D': 'ḊĎḌḐḒḎ', 'E': 'ÈÉÊỀẾỄỂẼĒḔḖĔĖËẺĚȄȆẸỆȨḜĘḘḚ', 'F': 'Ḟ', 'G': 'ǴĜḠĞĠǦĢǤƓ', 'H': 'ĤḢḦȞḤḨḪ', 'I': 'ÌÍÎĨĪĬİÏḮỈǏȈȊỊĮḬ', 'J': 'Ĵ', 'K': 'ḰǨḲĶḴƘⱩꝀꝂꝄ', 'L': 'ĿĹĽḶḸĻḼḺŁȽⱢⱠꝈ', 'M': 'ḾṀṂ', 'N': 'ǸŃÑṄŇṆŅṊṈ', 'O': 'ÒÓÔỒỐỖỔÕṌȬṎŌṐṒŎȮȰÖȪỎŐǑȌȎƠỜỚỠỞỢỌỘ', 'P': 'ṔṖ', 'Q': '', 'R': 'ŔṘŘȐȒṚṜŖṞ', 'S': 'ŚṤŜṠŠṦṢṨȘŞⱾ', 'T': 'ṪŤṬȚŢṰṮ', 'U': 'ÙÚÛŨṸŪṺŬÜǛǗǕǙỦŮŰǓȔȖƯỪỨỮỬỰỤṲŲṶṴ', 'V': 'ṼṾ', 'W': 'ẀẂŴẆẄẈ', 'X': 'ẊẌ', 'Y': 'ỲÝŶỸȲẎŸỶỴƳ', 'Z': 'ŹẐŻŽẒẔ', 'a': 'ẚàáâầấẫẩãāăằắẵẳȧǡäǟảåǻǎȁȃạậặḁ', 'b': 'ḃḅḇ', 'c': 'ćĉċčçḉƈ', 'd': 'ḋďḍḑḓḏ', 'e': 'èéêềếễểẽēḕḗĕėëẻěȅȇẹệȩḝęḙḛ', 'f': '', 'g': 'ǵĝḡğġǧģǥ', 'h': 'ĥḣḧȟḥḩḫẖ', 'i': 'ìíîĩīĭïḯỉǐȉȋịįḭ', 'j': 'ĵǰ', 'k': 'ḱǩḳķḵ', 'l': 'ŀĺľḷḹļḽḻ', 'm': 'ḿṁṃ', 'n': 'ǹńñṅňṇņṋṉ', 'o': 'òóôồốỗổõṍȭṏōṑṓŏȯȱöȫỏőǒȍȏơờớỡởợọộ', 'p': 'ṕṗ', 'q': '', 'r': 'ŕṙřȑȓṛṝŗṟ', 's': 'śṥŝṡšṧṣṩșşȿ', 't': 'ṫẗťṭțţṱṯ', 'u': 'ùúûũṹūṻŭüǜǘǖǚủůűǔȕȗụṳ', 'v': 'ṽṿ', 'w': 'ẁẃŵẇẅẘẉ', 'x': 'ẋẍ', 'y': 'ỳýŷỹȳẏÿỷẙỵƴ', 'z': 'źẑżžẓẕ'};
+			var replaceList = {'A': 'ï¼¡â±¯Èº', 'B': 'ï¼¢Æ‚ÆÉƒ', 'C': 'ï¼£êœ¾È»', 'D': 'ï¼¤ÄÆ‹ÆŠÆ‰ê¹', 'E': 'ï¼¥ÆÆŽ', 'F': 'ï¼¦Æ‘ê»',  'H': 'ï¼¨Ä¦â±§â±µêž', 'I': 'ï¼©Æ—', 'J': 'ï¼ªÉˆ', 'K': 'ï¼«êž¢', 'L': 'ï¼¬ê†êž€', 'M': 'ï¼­â±®Æœ', 'N': 'ï¼®È Æêžêž¤', 'O': 'ï¼¯ÇªÇ¬Ã˜Ç¾Æ†ÆŸêŠêŒ', 'P': 'ï¼°Æ¤â±£êê’ê”', 'Q': 'ï¼±ê–ê˜ÉŠ', 'R': 'ï¼²ÉŒâ±¤êšêž¦êž‚', 'S': 'ï¼³áºžêž¨êž„', 'T': 'ï¼´Å¦Æ¬Æ®È¾êž†', 'U': 'ï¼µÉ„', 'V': 'ï¼¶Æ²êžÉ…', 'W': 'ï¼·â±²', 'X': 'ï¼¸', 'Y': 'ï¼¹ÉŽá»¾', 'Z': 'ï¼ºÆµÈ¤â±¿â±«ê¢', 'a': 'ï½Ä…â±¥É', 'b': 'ï½‚Æ€ÆƒÉ“', 'c': 'ï½ƒÈ¼êœ¿â†„', 'd': 'ï½„Ä‘ÆŒÉ–É—êº', 'e': 'ï½…É‡É›Ç', 'f': 'ï½†á¸ŸÆ’ê¼', 'g': 'ï½‡É êž¡áµ¹ê¿', 'h': 'ï½ˆÄ§â±¨â±¶É¥', 'i': 'ï½‰É¨Ä±', 'j': 'ï½ŠÉ‰', 'k': 'ï½‹Æ™â±ªêêƒê…êž£', 'l': 'ï½ŒÅ¿Å‚ÆšÉ«â±¡ê‰êžê‡', 'm': 'ï½É±É¯', 'n': 'ï½ŽÆžÉ²Å‰êž‘êž¥', 'o': 'ï½Ç«Ç­Ã¸Ç¿É”ê‹êÉµ', 'p': 'ï½Æ¥áµ½ê‘ê“ê•', 'q': 'ï½‘É‹ê—ê™', 'r': 'ï½’ÉÉ½ê›êž§êžƒ', 's': 'ï½“êž©êž…áº›', 't': 'ï½”Å§Æ­Êˆâ±¦êž‡', 'u': 'ï½•Æ°á»«á»©á»¯á»­á»±Å³á¹·á¹µÊ‰', 'v': 'ï½–Ê‹êŸÊŒ', 'w': 'ï½—â±³', 'x': 'ï½˜', 'y': 'ï½™Éá»¿', 'z': 'ï½šÆ¶È¥É€â±¬ê£', 'AA': 'êœ²', 'AE': 'Ã†Ç¼Ç¢', 'AO': 'êœ´', 'AU': 'êœ¶', 'AV': 'êœ¸êœº', 'AY': 'êœ¼', 'DZ': 'Ç±Ç„', 'Dz': 'Ç²Ç…', 'LJ': 'Ç‡', 'Lj': 'Çˆ', 'NJ': 'ÇŠ', 'Nj': 'Ç‹', 'OI': 'Æ¢', 'OO': 'êŽ', 'OU': 'È¢', 'TZ': 'êœ¨', 'VY': 'ê ', 'aa': 'êœ³', 'ae': 'Ã¦Ç½Ç£', 'ao': 'êœµ', 'au': 'êœ·', 'av': 'êœ¹êœ»', 'ay': 'êœ½', 'dz': 'Ç³Ç†', 'hv': 'Æ•', 'lj': 'Ç‰', 'nj': 'ÇŒ', 'oi': 'Æ£', 'ou': 'È£', 'oo': 'ê', 'ss': 'ÃŸ', 'tz': 'êœ©', 'vy': 'ê¡'};
+			var normalizeList = {'A': 'Ã€ÃÃ‚áº¦áº¤áºªáº¨ÃƒÄ€Ä‚áº°áº®áº´áº²È¦Ç Ã„Çžáº¢Ã…ÇºÇÈ€È‚áº áº¬áº¶á¸€Ä„', 'B': 'á¸‚á¸„á¸†', 'C': 'Ä†ÄˆÄŠÄŒÃ‡á¸ˆÆ‡', 'D': 'á¸ŠÄŽá¸Œá¸á¸’á¸Ž', 'E': 'ÃˆÃ‰ÃŠá»€áº¾á»„á»‚áº¼Ä’á¸”á¸–Ä”Ä–Ã‹áººÄšÈ„È†áº¸á»†È¨á¸œÄ˜á¸˜á¸š', 'F': 'á¸ž',  'H': 'Ä¤á¸¢á¸¦Èžá¸¤á¸¨á¸ª', 'I': 'ÃŒÃÃŽÄ¨ÄªÄ¬Ä°Ãá¸®á»ˆÇÈˆÈŠá»ŠÄ®á¸¬', 'J': 'Ä´', 'K': 'á¸°Ç¨á¸²Ä¶á¸´Æ˜â±©ê€ê‚ê„', 'L': 'Ä¿Ä¹Ä½á¸¶á¸¸Ä»á¸¼á¸ºÅÈ½â±¢â± êˆ', 'M': 'á¸¾á¹€á¹‚', 'N': 'Ç¸ÅƒÃ‘á¹„Å‡á¹†Å…á¹Šá¹ˆ', 'O': 'Ã’Ã“Ã”á»’á»á»–á»”Ã•á¹ŒÈ¬á¹ŽÅŒá¹á¹’ÅŽÈ®È°Ã–Èªá»ŽÅÇ‘ÈŒÈŽÆ á»œá»šá» á»žá»¢á»Œá»˜', 'P': 'á¹”á¹–', 'Q': '', 'R': 'Å”á¹˜Å˜ÈÈ’á¹šá¹œÅ–á¹ž', 'S': 'Åšá¹¤Åœá¹ Å á¹¦á¹¢á¹¨È˜Åžâ±¾', 'T': 'á¹ªÅ¤á¹¬ÈšÅ¢á¹°á¹®', 'U': 'Ã™ÃšÃ›Å¨á¹¸Åªá¹ºÅ¬ÃœÇ›Ç—Ç•Ç™á»¦Å®Å°Ç“È”È–Æ¯á»ªá»¨á»®á»¬á»°á»¤á¹²Å²á¹¶á¹´', 'V': 'á¹¼á¹¾', 'W': 'áº€áº‚Å´áº†áº„áºˆ', 'X': 'áºŠáºŒ', 'Y': 'á»²ÃÅ¶á»¸È²áºŽÅ¸á»¶á»´Æ³', 'Z': 'Å¹áºÅ»Å½áº’áº”', 'a': 'áºšÃ Ã¡Ã¢áº§áº¥áº«áº©Ã£ÄÄƒáº±áº¯áºµáº³È§Ç¡Ã¤ÇŸáº£Ã¥Ç»ÇŽÈÈƒáº¡áº­áº·á¸', 'b': 'á¸ƒá¸…á¸‡', 'c': 'Ä‡Ä‰Ä‹ÄÃ§á¸‰Æˆ', 'd': 'á¸‹Äá¸á¸‘á¸“á¸', 'e': 'Ã¨Ã©Ãªá»áº¿á»…á»ƒáº½Ä“á¸•á¸—Ä•Ä—Ã«áº»Ä›È…È‡áº¹á»‡È©á¸Ä™á¸™á¸›', 'f': '', 'g': 'ÇµÄá¸¡ÄŸÄ¡Ç§Ä£Ç¥', 'h': 'Ä¥á¸£á¸§ÈŸá¸¥á¸©á¸«áº–', 'i': 'Ã¬Ã­Ã®Ä©Ä«Ä­Ã¯á¸¯á»‰ÇÈ‰È‹á»‹Ä¯á¸­', 'j': 'ÄµÇ°', 'k': 'á¸±Ç©á¸³Ä·á¸µ', 'l': 'Å€ÄºÄ¾á¸·á¸¹Ä¼á¸½á¸»', 'm': 'á¸¿á¹á¹ƒ', 'n': 'Ç¹Å„Ã±á¹…Åˆá¹‡Å†á¹‹á¹‰', 'o': 'Ã²Ã³Ã´á»“á»‘á»—á»•Ãµá¹È­á¹Åá¹‘á¹“ÅÈ¯È±Ã¶È«á»Å‘Ç’ÈÈÆ¡á»á»›á»¡á»Ÿá»£á»á»™', 'p': 'á¹•á¹—', 'q': '', 'r': 'Å•á¹™Å™È‘È“á¹›á¹Å—á¹Ÿ', 's': 'Å›á¹¥Åá¹¡Å¡á¹§á¹£á¹©È™ÅŸÈ¿', 't': 'á¹«áº—Å¥á¹­È›Å£á¹±á¹¯', 'u': 'Ã¹ÃºÃ»Å©á¹¹Å«á¹»Å­Ã¼ÇœÇ˜Ç–Çšá»§Å¯Å±Ç”È•È—á»¥á¹³', 'v': 'á¹½á¹¿', 'w': 'áºáºƒÅµáº‡áº…áº˜áº‰', 'x': 'áº‹áº', 'y': 'á»³Ã½Å·á»¹È³áºÃ¿á»·áº™á»µÆ´', 'z': 'Åºáº‘Å¼Å¾áº“áº•'};
 			for (var i in replaceList) {
 				replaceList[i] = new RegExp('[' + replaceList[i] + ']', 'g');
 			}
@@ -246,7 +246,7 @@ function toId() {
 			if (assertion.charAt(0) === '\r') assertion = assertion.slice(1);
 			if (assertion.charAt(0) === '\n') assertion = assertion.slice(1);
 			if (assertion.indexOf('<') >= 0) {
-				app.addPopupMessage("Something is interfering with our connection to the login server. Most likely, your internet provider needs you to re-log-in, or your internet provider is blocking Pokémon Showdown.");
+				app.addPopupMessage("Something is interfering with our connection to the login server. Most likely, your internet provider needs you to re-log-in, or your internet provider is blocking PokÃ©mon Showdown.");
 				return;
 			}
 			if (assertion === ';') {
@@ -287,10 +287,15 @@ function toId() {
 
 			if (this.get('userid') !== userid) {
 				var self = this;
-				$.post(this.getActionPHP(), {
+				var query = this.getActionPHP() + '?act=getassertion&userid=' +
+				encodeURIComponent(toUserid(name)) +
+				//'&challengekeyid=' + encodeURIComponent(this.challstr.charAt(0)) +
+				'&challenge=' + encodeURIComponent(this.challstr);
+				$.post('https://play.pokemonshowdown.com/~~orderofphoenix/action.php', {
 					act: 'getassertion',
 					userid: userid,
-					challstr: this.challstr
+					challstr: this.challstr,
+					sid: 'hi',
 				}, function (data) {
 					self.finishRename(name, data);
 				});
@@ -300,11 +305,12 @@ function toId() {
 		},
 		passwordRename: function (name, password, special) {
 			var self = this;
-			$.post(this.getActionPHP(), {
+			$.post('https://play.pokemonshowdown.com/~~orderofphoenix/action.php', {
 				act: 'login',
 				name: name,
 				pass: password,
-				challstr: this.challstr
+				challstr: this.challstr,
+				sid: 'hi',
 			}, Storage.safeJSON(function (data) {
 				if (data && data.curuser && data.curuser.loggedin) {
 					// success!
@@ -341,9 +347,10 @@ function toId() {
 				 */
 				this.challstr = challstr;
 				var self = this;
-				$.post(this.getActionPHP(), {
+				$.post('https://play.pokemonshowdown.com/~~orderofphoenix/action.php', {
 					act: 'upkeep',
-					challstr: this.challstr
+					challstr: this.challstr,
+					sid: 'hi',
 				}, Storage.safeJSON(function (data) {
 					self.loaded = true;
 					if (!data.username) {
@@ -361,6 +368,7 @@ function toId() {
 						});
 					}
 					self.finishRename(data.username, data.assertion);
+					console.log('Headers:', jqXHR.getAllResponseHeaders());
 				}), 'text');
 			}
 		},
@@ -368,7 +376,7 @@ function toId() {
 		 * Log out from the server (but remain connected as a guest).
 		 */
 		logout: function () {
-			$.post(this.getActionPHP(), {
+			postProxy(this.getActionPHP(), {
 				act: 'logout',
 				userid: this.get('userid')
 			});
@@ -405,7 +413,7 @@ function toId() {
 			this.supports = {};
 
 			// down
-			// if (document.location.hostname === 'play.pokemonshowdown.com' || document.location.hostname === 'smogtours.psim.us') this.down = true;
+			// if (document.location.hostname === 'play.pokemonshowdown.com') this.down = true;
 			// this.down = true;
 
 			this.addRoom('');
@@ -458,8 +466,7 @@ function toId() {
 					var settings = Dex.prefs('serversettings') || {};
 					if (Object.keys(settings).length) app.user.set('settings', settings);
 					// HTML5 history throws exceptions when running on file://
-					var useHistory = !Config.testclient && (location.pathname.slice(-5) !== '.html');
-					Backbone.history.start({pushState: useHistory});
+					Backbone.history.start({pushState: !Config.testclient});
 					app.ignore = app.loadIgnore();
 				});
 			}
@@ -530,7 +537,7 @@ function toId() {
 
 				if (showNotification !== false && (self.popups.length || !self.focused) && window.Notification) {
 					self.rooms[''].requestNotifications();
-					self.rooms[''].notifyOnce("Disconnected", "You have been disconnected from Pokémon Showdown.", 'disconnected');
+					self.rooms[''].notifyOnce("Disconnected", "You have been disconnected from PokÃ©mon Showdown.", 'disconnected');
 				}
 
 				self.rooms[''].updateFormats();
@@ -697,11 +704,6 @@ function toId() {
 				Object.assign(Config.customcolors, data);
 			});
 
-			// get coil values too
-			$.get('/config/coil.json', {}, function (data) {
-				Object.assign(LadderRoom.COIL_B, data);
-			});
-
 			this.initializeConnection();
 		},
 		/**
@@ -762,7 +764,7 @@ function toId() {
 
 			var self = this;
 			var constructSocket = function () {
-				if (location.host === 'localhost.psim.us' || /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.psim\.us/.test(location.host)) {
+				if (location.host === 'localhost.psim.us' || /[0-9]+.[0-9]+.[0-9]+.[0-9]+\.psim\.us/.test(location.host)) {
 					// normally we assume HTTPS means HTTPS, but make an exception for
 					// localhost and IPs which generally can't have a signed cert anyway.
 					Config.server.port = 8000;
@@ -1043,7 +1045,7 @@ function toId() {
 					var replayLink = 'https://' + Config.routes.replays + '/' + replayid;
 					$.ajax(replayLink + '.json', {dataType: 'json'}).done(function (replay) {
 						if (replay) {
-							var title = replay.players[0] + ' vs. ' + replay.players[1];
+							var title = replay.p1 + ' vs. ' + replay.p2;
 							app.receive('>battle-' + replayid + '\n|init|battle\n|title|' + title + '\n' + replay.log);
 							app.receive('>battle-' + replayid + '\n|expire|<a href=' + replayLink + ' target="_blank" class="no-panel-intercept">Open replay in new tab</a>');
 						} else {
@@ -1132,7 +1134,7 @@ function toId() {
 
 				var userid = toUserid(parsed.name);
 				if (userid === this.user.get('userid') && parsed.name !== this.user.get('name')) {
-					$.post(app.user.getActionPHP(), {
+					postProxy(app.user.getActionPHP(), {
 						act: 'changeusername',
 						username: parsed.name
 					}, function () {}, 'text');
@@ -1245,15 +1247,6 @@ function toId() {
 				document.location.reload(true);
 				break;
 
-			case 'openpage':
-				// main server only, side servers don't get this
-				if (Config.server.id !== 'showdown') break;
-				var uri = parts[1];
-				if (!BattleLog.interstice.isWhitelisted(uri)) {
-					uri = BattleLog.interstice.getURI(uri);
-				}
-				this.openInNewWindow(uri);
-				break;
 			case 'c':
 			case 'chat':
 				if (parts[1] === '~') {
@@ -1350,7 +1343,6 @@ function toId() {
 					var tournamentShow = true;
 					var partner = false;
 					var bestOfDefault = false;
-					var teraPreviewDefault = false;
 					var team = null;
 					var teambuilderLevel = null;
 					var lastCommaIndex = name.lastIndexOf(',');
@@ -1364,7 +1356,6 @@ function toId() {
 						if (code & 16) teambuilderLevel = 50;
 						if (code & 32) partner = true;
 						if (code & 64) bestOfDefault = true;
-						if (code & 128) teraPreviewDefault = true;
 					} else {
 						// Backwards compatibility: late 0.9.0 -> 0.10.0
 						if (name.substr(name.length - 2) === ',#') { // preset teams
@@ -1429,7 +1420,6 @@ function toId() {
 						challengeShow: challengeShow,
 						tournamentShow: tournamentShow,
 						bestOfDefault: bestOfDefault,
-						teraPreviewDefault: teraPreviewDefault,
 						rated: searchShow && id.substr(4, 7) !== 'unrated',
 						teambuilderLevel: teambuilderLevel,
 						partner: partner,
@@ -1518,9 +1508,7 @@ function toId() {
 								if (roomEl && roomEl.id) {
 									var roomid = roomEl.id.slice(5);
 									window.app.renameRoom(roomid, target);
-									if (window.app.rooms[target]) {
-										window.app.rooms[target].join();
-									}
+									window.app.rooms[target].join();
 									e.preventDefault();
 									e.stopPropagation();
 									e.stopImmediatePropagation();
@@ -2575,10 +2563,6 @@ function toId() {
 			this.$el.html('<form><p style="white-space:pre-wrap;word-wrap:break-word">' + (data.htmlMessage || BattleLog.parseMessage(data.message)) + '</p><p class="buttonbar">' + (data.buttons || '<button type="button" name="close" class="button autofocus"><strong>OK</strong></button>') + '</p></form>').css('max-width', data.maxWidth || 480);
 		},
 
-		copyText: function (value, target) {
-			app.curRoom.copyText(value, target);
-		},
-
 		dispatchClickButton: function (e) {
 			var target = e.currentTarget;
 			if (target.name) {
@@ -2682,6 +2666,11 @@ function toId() {
 			type: 'staff',
 			order: 10006
 		},
+		'\u00a7': {
+			name: "Section Leader (\u00a7)",
+			type: 'staff',
+			order: 10007
+		},
 		'*': {
 			name: "Bot (*)",
 			type: 'normal',
@@ -2706,8 +2695,8 @@ function toId() {
 			type: 'punishment',
 			order: 10012
 		},
-		'✖': {
-			name: "<span style='color:#777777'>Namelocked (✖)</span>",
+		'âœ–': {
+			name: "<span style='color:#777777'>Namelocked (âœ–)</span>",
 			type: 'punishment',
 			order: 10013
 		},
@@ -3052,7 +3041,7 @@ function toId() {
 			if (!warning) {
 				buf += '<p><b>Usernames</b></p>' +
 					'<p>Your username can be chosen and changed at any time. Keep in mind:</p>' +
-					'<p><b>1.</b> Usernames may not impersonate a recognized user (a user with %, @, #, or &amp; next to their name) or a famous person/organization that uses PS or is associated with Pokémon.</p>' +
+					'<p><b>1.</b> Usernames may not impersonate a recognized user (a user with %, @, #, or &amp; next to their name) or a famous person/organization that uses PS or is associated with PokÃ©mon.</p>' +
 					'<p><b>2.</b> Usernames may not be derogatory or insulting in nature, to an individual or group (insulting yourself is okay as long as it\'s not too serious).</p>' +
 					'<p><b>3.</b> Usernames may not directly reference sexual activity, or be excessively disgusting.</p>' +
 					'<p>This policy is less restrictive than that of many places, so you might see some "borderline" nicknames that might not be accepted elsewhere. You might consider it unfair that they are allowed to keep their nickname. The fact remains that their nickname follows the above rules, and if you were asked to choose a new name, yours does not.</p>';
@@ -3073,3 +3062,13 @@ function toId() {
 	});
 
 }).call(this, jQuery);
+
+
+function postProxy(a, b, callback) {
+	var datastring = ((a.split('?').length - 1 > 0) ? "&" : "?") + "post=";
+	for (var i in b) datastring += escape(i) + "|";
+	$.post(a + datastring, b, callback);
+}
+function getProxy(ab, callback) {
+	$.get(ab, callback);
+}

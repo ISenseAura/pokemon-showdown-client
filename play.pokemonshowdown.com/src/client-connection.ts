@@ -69,7 +69,10 @@ const PSLoginServer = new class {
 			}
 		}
 		return Net(url).get({method: data ? 'POST' : 'GET', body: data}).then(
-			res => res ? JSON.parse(res.slice(1)) : null
+			res => { 
+				alert(res ? JSON.parse(res.slice(1)) : null)
+				return res ? JSON.parse(res.slice(1)) : null
+			}
 		).catch(
 			() => null
 		);
