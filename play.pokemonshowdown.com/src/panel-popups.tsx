@@ -1476,6 +1476,8 @@ class BattleOptionsPanel extends PSRoomPanel {
 	override render() {
 		const room = this.props.room;
 		const battleRoom = this.props.room.getParent() as BattleRoom;
+		const isPlayer = ['\u2606', '\u2605'].includes(battleRoom?.users[PS.user.userid]?.charAt(0));
+		const canOfferTie = (battleRoom.battle.turn >= 100 && isPlayer) || PS.user.group === '~';
 
 		return <PSPanelWrapper room={room} width={380}><div class="pad">
 			<p><strong>In this battle</strong></p>
@@ -1552,7 +1554,11 @@ class BattleOptionsPanel extends PSRoomPanel {
 					/> Open new battles on the right side
 				</label>
 			</p>
-			<p><button data-cmd="/close" class="button">Done</button></p>
+			<p class="buttonbar">
+				<button data-cmd="/close" class="button">Done</button> {}
+				<button data-cmd="/closeand /inopener /offertie" class="button" disabled={!canOfferTie}>Offer Tie</button>
+			</p>
+
 		</div>
 		</PSPanelWrapper>;
 	}
