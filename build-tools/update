@@ -257,6 +257,7 @@ if (indexContents2) {
 	fs.writeFileSync('play.pokemonshowdown.com/caches/index-test.html', indexContents2);
 }
 fs.writeFileSync('play.pokemonshowdown.com/caches/index-new.html', preactIndexContents);
+fs.writeFileSync('play.pokemonshowdown.com/index.html', preactIndexContents);
 fs.writeFileSync('play.pokemonshowdown.com/caches/crossprotocol.html', crossprotocolContents);
 fs.writeFileSync('play.pokemonshowdown.com/js/replay-embed.js', replayEmbedContents);
 
