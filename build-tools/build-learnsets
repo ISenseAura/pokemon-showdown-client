@@ -11,14 +11,14 @@
 
 "use strict";
 
-const path = require('path');
-const fs = require('fs');
+import fs from 'node:fs';
 
-const thisFile = __filename;
-const thisDir = __dirname;
-const rootDir = path.resolve(thisDir, '../play.pokemonshowdown.com');
+import dexModule from '../caches/pokemon-showdown/dist/sim/dex.js';
 
-const Dex = require('../caches/pokemon-showdown/dist/sim/dex').Dex;
+process.chdir(import.meta.dirname + '/..');
+
+const thisFile = 'build-tools/build-learnsets';
+const { Dex } = dexModule;
 const toID = Dex.toID;
 
 function updateLearnsets(callback) {
@@ -53,11 +53,11 @@ function updateLearnsets(callback) {
 			);
 		}
 
-		newLearnsetsG6[speciesid] = {learnset: newLearnset};
+		newLearnsetsG6[speciesid] = { learnset: newLearnset };
 	}
 
 	const buf = [];
-	const pokemonList = Object.keys(Pokedex).map(speciesId => Pokedex[speciesId]).sort(function (a, b) {
+	const pokemonList = Object.keys(Pokedex).map(speciesId => Pokedex[speciesId]).sort((a, b) => {
 		// Missingno. goes first (zeroth); afterwards, CAP in descending dex order (increasingly negative)
 		// Finally, standard Pokémon in ascending dex order
 		if (a.num <= 0 && b.num > 0) return -1;
@@ -75,25 +75,23 @@ function updateLearnsets(callback) {
 		buf.push(speciesid + ':{learnset:' + lsetSerialized + '}');
 	}
 
-	const writeStream = fs.createWriteStream(path.join(rootDir, 'data', 'learnsets-g6.js')).on('error', callback);
+	const writeStream = fs.createWriteStream('play.pokemonshowdown.com/data/learnsets-g6.js').on('error', callback);
 	writeStream.write('exports.BattleLearnsets = {\n\t' + buf.join(',\n\t') + '\n};\n');
 	writeStream.end(callback);
 }
 
 let indexStats, updateStats, indexMTime, updateMTime;
 try {
-	indexStats = fs.statSync(path.join(rootDir, 'index.html'));
+	indexStats = fs.statSync('play.pokemonshowdown.com/index.html');
 	indexMTime = indexStats.mtime.getTime();
 } catch (err) {
 	if (err.code !== 'ENOENT') throw err;
 	// It doesn't exist currently, but it will by the end of the script execution.
 	// Any other error is unacceptable and will throw.
 }
-try {
+{
 	updateStats = fs.statSync(thisFile);
 	updateMTime = updateStats.mtime.getTime();
-} catch (err) {
-	throw err; // !!
 }
 
 // update learnsets-g6
@@ -104,15 +102,15 @@ let learnsetsG6Stats;
 let learnsetsG6ToUpdate = true;
 
 try {
-	learnsetsStats = fs.statSync(path.join(rootDir, 'data', 'learnsets.js'));
-} catch (err) {
+	learnsetsStats = fs.statSync('play.pokemonshowdown.com/data/learnsets.js');
+} catch {
 	// Couldn't find learnsets.js, but that's not the end of the world: skip to next task.
 	console.error("Couldn't find `data/learnsets.js`. Task aborted.");
 	learnsetsG6ToUpdate = false;
 }
 if (learnsetsG6ToUpdate) {
 	try {
-		learnsetsG6Stats = fs.statSync(path.join(rootDir, 'data', 'learnsets-g6.js'));
+		learnsetsG6Stats = fs.statSync('play.pokemonshowdown.com/data/learnsets-g6.js');
 	} catch (err) {
 		if (err.code === 'ENOENT') {
 			// It doesn't exist currently, but it will by the end of the script execution.
@@ -124,10 +122,13 @@ if (learnsetsG6ToUpdate) {
 	}
 }
 
-if (learnsetsG6ToUpdate && (!indexStats || !learnsetsG6Stats || indexMTime < updateMTime || indexMTime < learnsetsStats.mtime.getTime() || indexMTime < learnsetsG6Stats.mtime.getTime())) {
+if (learnsetsG6ToUpdate && (
+	!indexStats || !learnsetsG6Stats || indexMTime < updateMTime || indexMTime < learnsetsStats.mtime.getTime() ||
+	indexMTime < learnsetsG6Stats.mtime.getTime()
+)) {
 	// Only merge learnsets.js with learnsets-g6.js if any of those files, or this one, have been modified recently (or if we don't know what "recently" means)
 
-	updateLearnsets(function (err) {
+	updateLearnsets(err => {
 		if (err) {
 			let stack = err.stack || '';
 			stack = "File `data/learnsets-g6` failed to update.\n" + stack;

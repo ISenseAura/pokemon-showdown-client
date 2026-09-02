@@ -14,7 +14,7 @@
 
 const MAX_UNDO_HISTORY = 100;
 export type MiniEditPlugin = new (editor: MiniEdit) => unknown;
-export type MiniEditSelection = {start: number, end: number} | null;
+export type MiniEditSelection = { start: number, end: number } | null;
 export class MiniEdit {
 	static plugins: MiniEditPlugin[] = [];
 
@@ -31,17 +31,20 @@ export class MiniEdit {
 	 * it doesn't already exist and the user types a newline at the end
 	 * of the text, it wouldn't appear.
 	 */
-	// tslint:disable-next-line
 	_setContent: (text: string) => void;
 	pushHistory?: (text: string, selection: MiniEditSelection) => void;
+	composing = false;
 	onKeyDown = (ev: KeyboardEvent) => {
+		if (ev.isComposing) return;
 		if (ev.keyCode === 13) { // enter
 			this.replaceSelection('\n');
 			ev.preventDefault();
 		}
 	};
 
-	constructor(el: HTMLElement, options: {setContent: MiniEdit['_setContent'], onKeyDown?: (ev: KeyboardEvent) => void}) {
+	constructor(
+		el: HTMLElement, options: { setContent: MiniEdit['_setContent'], onKeyDown?: (ev: KeyboardEvent) => void }
+	) {
 		this.element = el;
 
 		this._setContent = options.setContent;
@@ -50,12 +53,21 @@ export class MiniEdit {
 		this.element.setAttribute('contentEditable', 'true');
 		this.element.setAttribute('autoComplete', 'off');
 		this.element.setAttribute('spellCheck', 'false');
-		this.element.addEventListener('input', () => {
+		this.element.addEventListener('input', ev => {
+			if (this.composing || (ev as any).isComposing) return;
+			this.reformat();
+		});
+		this.element.addEventListener('compositionstart', () => {
+			this.composing = true;
+		});
+		this.element.addEventListener('compositionend', () => {
+			// browsers disagree on whether input or compositionend happens first,
+			// so run reformat on both
+			this.composing = false;
 			this.reformat();
 		});
 		this.element.addEventListener('keydown', this.onKeyDown);
 
-		// tslint:disable-next-line
 		for (const Plugin of MiniEdit.plugins) new Plugin(this);
 	}
 
@@ -71,15 +83,14 @@ export class MiniEdit {
 		return false;
 	}
 
-	setValue(text: string, selection?: MiniEditSelection): void {
-		if (selection === undefined) selection = this.getSelection();
+	setValue(text: string, selection = this.getSelection()): void {
 		this._setContent(text);
 
 		this.setSelection(selection);
 		this.pushHistory?.(text, selection);
 	}
 	getValue(): string {
-		let text = this.element.textContent || '';
+		const text = this.element.textContent || '';
 		if (text.endsWith('\n')) return text.slice(0, -1);
 		return text;
 	}
@@ -90,7 +101,7 @@ export class MiniEdit {
 		const selection = this.getSelection()!;
 		const oldContent = this.getValue();
 		const newText = oldContent.slice(0, selection.start) + text + oldContent.slice(selection.end);
-		this.setValue(newText, {start: selection.start + text.length, end: selection.start + text.length});
+		this.setValue(newText, { start: selection.start + text.length, end: selection.start + text.length });
 	}
 
 	getSelection(): MiniEditSelection {
@@ -116,7 +127,7 @@ export class MiniEdit {
 			});
 		}
 
-		return (start === null || end === null) ? null : {start, end};
+		return (start === null || end === null) ? null : { start, end };
 	}
 
 	setSelection(sel: MiniEditSelection): void {
@@ -149,18 +160,71 @@ export class MiniEdit {
 		}
 	}
 	select(): void {
-		this.setSelection({start: 0, end: this.getValue().length});
+		this.setSelection({ start: 0, end: this.getValue().length });
 	}
 }
 
+const HTML_BLOCK_TAGS = [
+	'ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'DD', 'DIV', 'DL', 'DT',
+	'FIGCAPTION', 'FIGURE', 'FOOTER', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+	'HEADER', 'HR', 'LI', 'MAIN', 'NAV', 'OL', 'P', 'PRE', 'SECTION', 'TABLE',
+	'TBODY', 'TD', 'TFOOT', 'TH', 'THEAD', 'TR', 'UL',
+];
+// Pasting can disrupt newlines, so they get manually processed here.
+// Unfortunately, this is massively complicated by an Android Chrome bug.
 export class MiniEditPastePlugin {
 	constructor(editor: MiniEdit) {
 		editor.element.addEventListener('paste', e => {
 			// Manually insert plain-text contents so we keep newlines
-			const text = e.clipboardData!.getData('text/plain');
+			const text = this.getClipboardPlainText(e.clipboardData!);
 			editor.replaceSelection(text);
 			e.preventDefault();
 		});
+	}
+	getClipboardPlainText(data: DataTransfer): string {
+		const text = data.getData('text/plain');
+		// Android Chrome bug: getData('text/plain') doesn't include newlines
+		// no, putting it directly in and grabbing it from `element.textContent`
+		// doesn't work, either
+		const html = data.getData('text/html');
+		if (!html || text.includes('\n')) return text;
+
+		const htmlText = this.htmlToPlainText(html);
+		return htmlText.trim().includes('\n') ? htmlText : text;
+	}
+
+	htmlToPlainText(html: string): string {
+		// contenteditable is really janky so this is kind of just wild guessing
+		// this is really just a backup flow for the Android Chrome bug that should be
+		// avoided if at all possible
+		return html
+			// in theory the first two shouldn't show up in pasted HTML, but who knows?
+			.replace(/<!--[\s\S]*?-->/g, '')
+			.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, '')
+			// handle newlines
+			// .replace(/\n/g, '<br>') // in case they're in <pre>?
+			.replace(/\n/g, '') // Firefox bug: just adds random newlines for fun apparently???
+			.replace(new RegExp(`</?(?:${HTML_BLOCK_TAGS.join('|')})\\b[^>]*>`, 'gi'), '\n')
+			.replace(/\n{2,}/g, '\n')
+			.replace(/<br\b[^>]*>\n?/gi, '\n')
+			// everything else
+			.replace(/<[^>]*>/g, '')
+			.replace(/^\n+$/g, '')
+			.replace(/&(#(?:x[0-9a-f]+|\d+)|[a-z]+);/gi, (entity, value) => {
+				switch (value.toLowerCase()) {
+				case 'amp': return '&';
+				case 'gt': return '>';
+				case 'lt': return '<';
+				case 'nbsp': return ' ';
+				case 'quot': return '"';
+				case 'apos': return "'";
+				default:
+					if (!value.startsWith('#')) return entity;
+					const code = value.charAt(1).toLowerCase() === 'x' ?
+						parseInt(value.slice(2), 16) : parseInt(value.slice(1), 10);
+					return isNaN(code) ? entity : String.fromCharCode(code);
+				}
+			});
 	}
 }
 MiniEdit.plugins.push(MiniEditPastePlugin);
@@ -174,11 +238,11 @@ export class MiniEditUndoPlugin {
 	editor: MiniEdit;
 	undoIndex: number | null = null;
 	ignoreInput = false;
-	history: {text: string, selection: MiniEditSelection}[] = [];
+	history: { text: string, selection: MiniEditSelection }[] = [];
 
 	constructor(editor: MiniEdit) {
 		this.editor = editor;
-		this.history.push({text: editor.getValue(), selection: {start: 0, end: 0}});
+		this.history.push({ text: editor.getValue(), selection: { start: 0, end: 0 } });
 
 		this.editor.pushHistory = this.onPushHistory;
 		editor.element.addEventListener('keydown', this.onKeyDown);
@@ -197,12 +261,13 @@ export class MiniEditUndoPlugin {
 			this.undoIndex = null;
 		}
 
-		this.history.push({text, selection});
+		this.history.push({ text, selection });
 
 		if (this.history.length > MAX_UNDO_HISTORY) this.history.shift();
 	};
 
 	onKeyDown = (e: KeyboardEvent) => {
+		if (e.isComposing) return;
 		// ctrl+z or cmd+z
 		const undoPressed = (e.ctrlKey && e.keyCode === 90) || (e.metaKey && !e.shiftKey && e.keyCode === 90);
 		// ctrl+y or cmd+shift+z
@@ -227,7 +292,7 @@ export class MiniEditUndoPlugin {
 			return;
 		}
 
-		const {text, selection} = this.history[this.undoIndex];
+		const { text, selection } = this.history[this.undoIndex];
 		this.ignoreInput = true;
 		this.editor.setValue(text, selection);
 	};

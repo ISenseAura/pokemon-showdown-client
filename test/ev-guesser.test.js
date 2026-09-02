@@ -1,7 +1,11 @@
 const assert = require('assert').strict;
+const {describe, it} = require('node:test');
 
 try {
   global.BattlePokedex = require('../play.pokemonshowdown.com/data/pokedex.js').BattlePokedex;
+} catch (err) {}
+try {
+  global.BattleMovedex = require('../play.pokemonshowdown.com/data/moves.js').BattleMovedex;
 } catch (err) {}
 require('../play.pokemonshowdown.com/js/battle-dex-data.js');
 require('../play.pokemonshowdown.com/js/battle-dex.js');
@@ -16,7 +20,7 @@ describe('EV Guesser', () => {
       item: 'Choice Band',
       moves: ['Flare Blitz', 'Close Combat', 'Wild Charge', 'Extreme Speed'],
     });
-    assert(guess.role === 'Fast Band');
+    assert.strictEqual(guess.role, 'Fast Band');
   });
 
 });
