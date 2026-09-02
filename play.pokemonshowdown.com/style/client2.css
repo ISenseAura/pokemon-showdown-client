@@ -160,6 +160,7 @@ li::marker {
 	position: absolute;
 	top: 12px;
 	right: 12px;
+	z-index: 13;
 }
 .header-vertical .userbar {
 	right: auto;
