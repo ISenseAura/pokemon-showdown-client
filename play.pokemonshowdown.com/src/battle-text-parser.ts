@@ -48,7 +48,7 @@ export class BattleTextParser {
 		case 'chatmsg': case 'chatmsg-raw': case 'raw': case 'error': case 'html':
 		case 'inactive': case 'inactiveoff': case 'warning':
 		case 'fieldhtml': case 'controlshtml': case 'pagehtml': case 'bigerror':
-		case 'debug': case 'tier': case 'challstr': case 'customgroups': case 'popup': case '':
+		case 'debug': case 'tier': case 'challstr': case 'customgroups': case 'popup': case 'tcg': case 'request': case '':
 			return [cmd, line.slice(index + 1)];
 		case 'c': case 'chat': case 'uhtml': case 'uhtmlchange': case 'queryresponse': case 'showteam':
 			// three parts

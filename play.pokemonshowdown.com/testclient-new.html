@@ -52,6 +52,7 @@
 		linkStyle("style/teambuilder.css");
 		linkStyle("style/battle-search.css");
 		linkStyle("style/font-awesome.css");
+		linkStyle("style/tcg.css");
 	</script>
 	<script src="https://play.pokemonshowdown.com/config/config.js"></script>
 	<script>
@@ -69,12 +70,10 @@
 					users: "pokemonshowdown.com/users"
 				},
 				defaultserver: {
-					id: 'showdown',
-					host: 'sim3.psim.us',
-					port: 443,
-					httpport: 8000,
-					altport: 80,
-					registered: true
+					id: 'localhost',
+					host: 'localhost',
+					port: 8000,
+					registered: false
 				},
 				customcolors: {}
 			};
@@ -86,18 +85,29 @@
 		}
 		Config.testclient = true;
 		(function() {
+			var localServer = {
+				id: 'localhost',
+				host: 'localhost',
+				port: 8000,
+				registered: false
+			};
 			if (location.search !== '') {
 				var m = /\?~~(([^:\/]*)(:[0-9]*)?)/.exec(location.search);
 				if (m) {
 					Config.defaultserver = {
 						id: m[1],
 						host: m[2],
-						port: (m[3] && parseInt(m[3].substr(1))) || 8000
+						port: (m[3] && parseInt(m[3].substr(1))) || 8000,
+						registered: false
 					};
 				} else {
 					alert('Unrecognised query string syntax: ' + location.search);
+					Config.defaultserver = localServer;
 				}
+			} else {
+				Config.defaultserver = localServer;
 			}
+			Config.server = Config.defaultserver;
 		})();
 	</script>
 	<script nomodule src="/js/lib/ps-polyfill.js"></script>
@@ -144,6 +154,7 @@
 	<script src="js/battle-tooltips.js"></script>
 	<script src="js/battle.js"></script>
 	<script src="js/battle-choices.js"></script>
+	<script src="js/battle-tcg.js"></script>
 	<script src="js/panel-battle.js"></script>
 
 	<script src="data/pokedex.js" onerror="loadRemoteData(this.src)"></script>

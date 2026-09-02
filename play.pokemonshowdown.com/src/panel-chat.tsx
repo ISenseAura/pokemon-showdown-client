@@ -651,6 +651,11 @@ export class ChatRoom extends PSRoom {
 			this.update(null);
 		},
 		'move,switch,team,pass,shift,choose'(target, cmd) {
+			const formatid = this.id.split('-')[1] || '';
+			if (formatid.startsWith('tcg')) {
+				if (cmd === 'choose' && target) this.sendDirect(`/choose ${target}`);
+				return;
+			}
 			if (!this.battle) return this.errorReply('You are not in a battle');
 			const room = this as any as BattleRoom;
 			if (!room.choices || !room.request) {
@@ -1506,7 +1511,7 @@ export class ChatUserList extends preact.Component<{
 					<button class="button button-middle" data-cmd="/challenge">Challenge</button>
 					<button class="button button-middle" data-href={`useroptions-${pmTargetid}`}>{'\u2026'}</button>
 				</>
-			) : room.battle ? (
+			) : room.battle || (room.id.split('-')[1] || '').startsWith('tcg') ? (
 				<>
 					<button data-href="userlist" class="button button-middle">{room.userCount} users</button>
 					<button data-href="battleoptions" class="button button-middle">Battle options</button>

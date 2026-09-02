@@ -23,6 +23,7 @@ import type { Args } from "./battle-text-parser";
 import { ModifiableValue } from "./battle-tooltips";
 import { Net } from "./client-connection";
 import { BattleLog } from "./battle-log";
+import { TcgBoard, isTcgBattleId, chatEntryForEvent, chatHtmlForEntry, type TcgAction, type TcgEvent, type TcgSnapshot } from "./battle-tcg";
 
 type BattleDesc = {
 	id: RoomID,
@@ -155,6 +156,15 @@ export class BattleRoom extends ChatRoom {
 		* null = initializing, we don't know yet */
 	rejoining: boolean | null = null;
 	overlayActive: 'move' | 'switch' | null = null;
+	tcgMode = isTcgBattleId(this.id);
+	tcgSnapshot: TcgSnapshot | null = null;
+	tcgEvents: TcgEvent[] = [];
+	tcgFxKey = 0;
+	tcgLastSeq = 0;
+	tcgWait = false;
+	tcgEnded = false;
+	/** Winner display name from `|win|`; `null` means tie / unknown. */
+	tcgWinner: string | null = null;
 
 	override interruptClose(explicit?: boolean, elem?: HTMLElement | null) {
 		if (this.isPlaying() || this.requireForfeit) {
@@ -164,6 +174,9 @@ export class BattleRoom extends ChatRoom {
 		return super.interruptClose(explicit, elem);
 	}
 	isPlaying() {
+		if (this.tcgMode) {
+			return !this.tcgEnded && this.connectMode !== 'deleted' && !!this.tcgSnapshot;
+		}
 		return this.battle && !this.battle.ended && this.request && this.connectMode !== 'deleted';
 	}
 	updateChoiceNotification() {
@@ -188,6 +201,11 @@ export class BattleRoom extends ChatRoom {
 
 		if (!this.choices || this.choices.isDone()) body = '';
 
+		if (this.tcgMode && this.tcgSnapshot && !this.tcgWait && this.tcgSnapshot.actions?.length && !this.tcgEnded) {
+			title = "Your turn!";
+			body = "Choose a TCG action" + oName;
+		}
+
 		const current = this.notifications.find(notification => notification.id === 'choice');
 		if ((current?.body || '') === body) return;
 
@@ -207,6 +225,11 @@ export class BattleRoom extends ChatRoom {
 		this.side = null;
 		this.request = null;
 		this.choices = null;
+		this.tcgSnapshot = null;
+		this.tcgEvents = [];
+		this.tcgLastSeq = 0;
+		this.tcgEnded = false;
+		this.tcgWinner = null;
 		this.updateChoiceNotification();
 		return false;
 	}
@@ -434,6 +457,21 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 	};
 	override componentDidMount() {
 		const room = this.props.room;
+		if (room.tcgMode || isTcgBattleId(room.id)) {
+			room.tcgMode = true;
+			const logEl = this.base!.querySelector<HTMLDivElement>('.battle-log');
+			if (logEl) {
+				room.log ||= new BattleLog(logEl);
+				room.log.getHighlight = room.handleHighlight;
+			}
+			if (room.backlog) {
+				const backlog = room.backlog;
+				room.backlog = null;
+				for (const line of backlog) this.receiveTcgLine(line);
+			}
+			super.componentDidMount();
+			return;
+		}
 		const $elem = $(this.base!);
 		const battle = (room.battle ||= new Battle({
 			id: room.id as any,
@@ -489,6 +527,11 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 	}
 	override receiveLine(args: Args) {
 		const room = this.props.room;
+		if (room.tcgMode || args[0] === 'tcg' || (args[0] === 'request' && args[1]?.includes('"tcg":true'))) {
+			room.tcgMode = true;
+			this.receiveTcgLine(args);
+			return;
+		}
 		switch (args[0]) {
 		case 'cantleave':
 			room.requireForfeit = true;
@@ -532,6 +575,125 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		room.battle.add('|' + args.join('|'));
 		if (PS.prefs.noanim) this.props.room.battle.seekTurn(Infinity);
 	}
+	receiveTcgLine(args: Args) {
+		const room = this.props.room;
+		switch (args[0]) {
+		case 'tcg':
+			this.applyTcgPayload(JSON.parse(args[1] || '{}'));
+			return;
+		case 'request':
+			if (!args[1]) return;
+			this.applyTcgPayload(JSON.parse(args[1]), true);
+			return;
+		case 'player': {
+			// |player|p1|Name|avatar|rating| — silent (same as battle text parser)
+			const side = args[1] || '';
+			const name = args[2] || '';
+			if (name && room.tcgSnapshot?.players) {
+				const idx = side === 'p1' ? 0 : side === 'p2' ? 1 : -1;
+				if (idx >= 0 && room.tcgSnapshot.players[idx]) {
+					room.tcgSnapshot.players[idx].name = name;
+					room.update(null);
+				}
+			}
+			return;
+		}
+		case 'win': case 'tie': {
+			room.tcgEnded = true;
+			room.tcgWait = true;
+			const winnerName = args[0] === 'win' ? (args[1] || '').trim() : '';
+			room.tcgWinner = args[0] === 'tie' ? null : (winnerName || null);
+			const esc = (s: string) => String(s || '')
+				.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+			const text = args[0] === 'tie' || !winnerName ?
+				'The battle ended in a tie.' :
+				`${winnerName} won the battle!`;
+			room.log?.add(['html',
+				`<div class="chat tcg-log-line k-win">` +
+				`<span class="tcg-log-tag">${args[0] === 'tie' ? 'Tie' : 'Win'}</span>` +
+				`<span class="tcg-log-text">${esc(text)}</span></div>`]);
+			room.tcgEvents = [{
+				seq: ++room.tcgLastSeq,
+				type: 'over',
+				reason: args[0] === 'tie' || !winnerName ? 'Draw' : `${winnerName} won`,
+				winnerName: winnerName || undefined,
+				tie: args[0] === 'tie' || !winnerName,
+			}];
+			room.tcgFxKey++;
+			room.updateChoiceNotification();
+			room.update(null);
+			return;
+		}
+		case 'html': case 'raw': case 'c': case 'c:': case 'chat': case 'chatmsg':
+		case 'inactive': case 'error': case 'bigerror': case 'tier':
+			room.log?.add(args);
+			if (args[0] === 'error') room.update(null);
+			return;
+		case '-message':
+			room.log?.add(['chatmsg', args.slice(1).join('|')]);
+			return;
+		case 'turn':
+			// Event-driven turn headings are written from |tcg| payloads.
+			return;
+		case 'title':
+			if (args[1]) room.title = args[1];
+			PS.update();
+			return;
+		}
+		if (args[0] && !['init', 'request', 'done', ''].includes(args[0])) {
+			room.log?.add(args);
+		}
+	}
+	applyTcgPayload(data: {
+		tcg?: boolean, kind?: string, wait?: boolean, seq?: number,
+		snapshot?: TcgSnapshot, events?: TcgEvent[],
+	}, skipFx = false) {
+		const room = this.props.room;
+		if (!data) return;
+		if (data.kind === 'watch' && room.tcgSnapshot?.you != null) {
+			return;
+		}
+		if (data.snapshot) {
+			room.tcgSnapshot = data.snapshot;
+			if (data.snapshot.status === 'over') {
+				room.tcgEnded = true;
+				if (room.tcgWinner == null && data.snapshot.winner != null) {
+					room.tcgWinner = data.snapshot.players?.[data.snapshot.winner]?.name || null;
+				}
+			}
+		}
+		if (data.wait != null) room.tcgWait = data.wait;
+		else if (data.snapshot) room.tcgWait = !data.snapshot.actions?.length;
+		if (data.events?.length && !skipFx) {
+			room.tcgEvents = data.events;
+			room.tcgFxKey++;
+			const players = data.snapshot?.players || room.tcgSnapshot?.players;
+			for (const ev of data.events) {
+				if (typeof ev.seq === 'number' && ev.seq <= room.tcgLastSeq) continue;
+				if (typeof ev.seq === 'number') room.tcgLastSeq = Math.max(room.tcgLastSeq, ev.seq);
+				const entry = chatEntryForEvent(ev, players);
+				if (!entry) continue;
+				if (ev.type === 'turn') {
+					const esc = (s: string) => String(s || '')
+						.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+					room.log?.add(['html',
+						`<h2 class="battle-history tcg-turn-head">Turn ${Number(ev.number) || '?'} — ${esc(entry.text)}</h2>`]);
+					continue;
+				}
+				room.log?.add(['html', chatHtmlForEntry(entry)]);
+			}
+		} else if (typeof data.seq === 'number') {
+			room.tcgLastSeq = Math.max(room.tcgLastSeq, data.seq);
+		}
+		room.updateChoiceNotification();
+		room.update(null);
+	}
+	sendTcgAction = (action: TcgAction) => {
+		const room = this.props.room;
+		room.tcgWait = true;
+		room.sendDirect(`/choose ${JSON.stringify(action)}`);
+		room.update(null);
+	};
 	receiveRequest(request: BattleRequest | null) {
 		const room = this.props.room;
 		if (!request) {
@@ -1331,6 +1493,9 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 	override render() {
 		this.updateLayout();
 		const room = this.props.room;
+		if (room.tcgMode || isTcgBattleId(room.id)) {
+			return this.renderTcg();
+		}
 		const id = `room-${room.id}`;
 		const hardcoreStyle = room.battle?.hardcoreMode ? <style
 			dangerouslySetInnerHTML={{ __html: `#${id} .battle .turn, #${id} .battle-history { display: none !important; }` }}
@@ -1478,6 +1643,97 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 				room={room} onMessage={this.send} onKey={this.onKey} left={battleWidth} tinyLayout={room.width < battleWidth + 340}
 			/>
 			<ChatUserList room={room} left={battleWidth} minimized />
+		</PSPanelWrapper>;
+	}
+
+	renderTcg() {
+		const room = this.props.room;
+		const { battleHeight, battleWidth, layout } = this.chooseLayout();
+		const chatWidth = Math.min(400, Math.max(300, Math.floor(room.width * 0.3)));
+		const boardW = layout === 'top-and-bottom' ?
+			Math.max(battleWidth, Math.min(room.width, 960)) :
+			Math.max(battleWidth, room.width - chatWidth);
+		const board = room.tcgSnapshot ? <TcgBoard
+			snapshot={room.tcgSnapshot}
+			events={room.tcgEvents}
+			fxKey={room.tcgFxKey}
+			waiting={room.tcgWait}
+			ended={room.tcgEnded}
+			winnerName={room.tcgWinner}
+			onAct={this.sendTcgAction}
+		/> : <div class="tcg-table"><p class="tcg-waiting">Shuffling…</p></div>;
+
+		// Phone / narrow: board fills the room; toggle to chat (same idea as gen battles)
+		const isPhone = room.width < 640;
+		if (isPhone) {
+			const showingChat = this.mobileChatShown;
+			return <PSPanelWrapper room={room} focusClick noScroll="hidden">
+				<div
+					class="tcg-mobile-board"
+					style={showingChat ? 'display:none;' :
+						'position:absolute;inset:0;display:flex;flex-direction:column;' +
+						'padding:0;box-sizing:border-box;z-index:1;min-height:0;'}
+				>
+					<div style="flex:1 1 0;min-height:0;min-width:0;width:100%;height:100%;display:flex;">
+						{board}
+					</div>
+					{this.renderConnectError()}
+				</div>
+				<div class="tcg-mobile-chat" style={showingChat ? 'position:absolute;inset:0;z-index:1;' : 'display:none;'}>
+					<ChatLog class="battle-log hasuserlist" room={room} noSubscription hasPreempt />
+					<ChatTextEntry room={room} onMessage={this.send} onKey={this.onKey} tinyLayout />
+					<ChatUserList room={room} minimized />
+				</div>
+				{showingChat ? (
+					<button
+						type="button" class="button tcg-view-toggle" name="hideChat"
+						onClick={this.showMobileBattle}
+					>
+						Board <i class="fa fa-caret-right" aria-hidden></i>
+					</button>
+				) : (
+					<button
+						type="button" class="button tcg-view-toggle" name="showChat"
+						onClick={this.showMobileChat}
+					>
+						<i class="fa fa-caret-left" aria-hidden></i> Chat
+					</button>
+				)}
+			</PSPanelWrapper>;
+		}
+
+		if (layout === 'top-and-bottom') {
+			return <PSPanelWrapper room={room} focusClick noScroll="hidden">
+				<div style={`position:relative;height:${battleHeight}px;width:${boardW}px;margin:0 auto;display:flex`}>
+					{board}
+				</div>
+				<ChatLog
+					class="battle-log hasuserlist" room={room} top={battleHeight} noSubscription hasPreempt
+				/>
+				<ChatTextEntry
+					room={room} onMessage={this.send} onKey={this.onKey} left={0} tinyLayout={room.width < 400}
+				/>
+				<ChatUserList room={room} top={battleHeight} minimized />
+			</PSPanelWrapper>;
+		}
+
+		return <PSPanelWrapper room={room} focusClick noScroll="hidden">
+			<div
+				class="scrollable-battle-container"
+				style={`width:${boardW}px;height:100%;display:flex;flex-direction:column;` +
+					`padding:4px;box-sizing:border-box`}
+			>
+				<div style="flex:1 1 auto;min-height:0;display:flex">{board}</div>
+				{this.renderConnectError()}
+			</div>
+			<ChatLog
+				class="battle-log hasuserlist" room={room} left={boardW} noSubscription hasPreempt
+			/>
+			<ChatTextEntry
+				room={room} onMessage={this.send} onKey={this.onKey} left={boardW}
+				tinyLayout={room.width < boardW + 340}
+			/>
+			<ChatUserList room={room} left={boardW} minimized />
 		</PSPanelWrapper>;
 	}
 }
