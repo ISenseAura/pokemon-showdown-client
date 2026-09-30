@@ -156,8 +156,19 @@ function placeSlotOf(e: TcgEvent): TcgSlot {
 	const n = Number(e.slot);
 	return Number.isFinite(n) ? n : 'active';
 }
+/** Names from earlier boards, so a KO still has a name after the Pokémon leaves play. */
+const seenMonNames = new Map<string, string>();
+export function noteTcgMons(players: TcgPlayerView[] | undefined) {
+	if (!players) return;
+	for (const p of players) {
+		const mons = [p?.active, ...(p?.bench || [])];
+		for (const mon of mons) {
+			if (mon?.iid && mon.name) seenMonNames.set(mon.iid, mon.name);
+		}
+	}
+}
 function monName(players: TcgPlayerView[] | undefined, iid?: string): string {
-	return findMonView(players, iid)?.name || 'a Pokémon';
+	return findMonView(players, iid)?.name || (iid && seenMonNames.get(iid)) || 'a Pokémon';
 }
 function cardLabel(id?: string): string {
 	return id || 'a card';
@@ -1047,22 +1058,8 @@ class FxOverlay extends preact.Component<{ fx: FxBeat | null, you?: number | nul
 		}
 		if (k === 'first') return wrap('first', cap('FIRST', fx.extra));
 		if (k === 'over') {
-			const raw = String(fx.extra || '');
-			const nameMatch = raw.match(/^(.+?)\s+wins?\.?$/i);
-			if (fx.tie || /^draw$/i.test(raw)) {
-				return wrap('over', <div class="fx-turn-banner fx-win-banner tie">
-					<em>Draw</em>
-				</div>);
-			}
-			if (nameMatch) {
-				return wrap('over', <div class="fx-turn-banner fx-win-banner win">
-					<em>{nameMatch[1]}</em>
-					<strong>won</strong>
-				</div>);
-			}
-			return wrap('over', <div class="fx-turn-banner fx-win-banner">
-				<em>{raw || 'Game Over'}</em>
-			</div>);
+			// The board banner is the one win message. Drawing it here too flashed "won" twice.
+			return null;
 		}
 		if (k === 'points') return wrap('points', <div class="fx-points-burst">+{fx.n || 1}</div>);
 		if (k === 'status') return wrap('status', cap('STATUS', fx.extra ? String(fx.extra) : 'Recovered'));
@@ -2544,10 +2541,18 @@ export class TcgBoard extends preact.Component<{
 			(turnSeat != null && !isMyTurnSeat && !allActs.length)
 		);
 		const st = this.state;
-		const winName = (this.props.winnerName != null && this.props.winnerName !== '') ?
+		let winName = (this.props.winnerName != null && this.props.winnerName !== '') ?
 			this.props.winnerName :
 			(snap.winner != null ? snap.players[snap.winner]?.name : null);
-		const showWinBanner = !!this.props.ended && !(st.fx && st.fx.kind === 'over');
+		if (st.fx?.kind === 'over') {
+			if (st.fx.tie) winName = null;
+			else {
+				const fromFx = String(st.fx.extra || '').match(/^(.+?)\s+wins?\.?$/i)?.[1];
+				if (fromFx && !/^draw$/i.test(fromFx)) winName = fromFx;
+			}
+		}
+		// Same node from the ending beat through the result, so the fade-in does not replay.
+		const showWinBanner = st.fx?.kind === 'over' || (!!this.props.ended && !st.fx);
 
 		const tableClass = [
 			'tcg-table', pocket ? 'pocket' : 'live',
@@ -2595,6 +2600,7 @@ export class TcgBoard extends preact.Component<{
 					<span class="tcg-avatar foe" aria-hidden="true">{(foe.name || '?').slice(0, 1).toUpperCase()}</span>
 					<div class="tcg-player-meta">
 						<span class="tcg-name">{foe.name}</span>
+						<span class="tcg-hand-count" title={`${pileCount(foe.hand)} in hand`}>{pileCount(foe.hand)}</span>
 					</div>
 				</div>
 				<div class={`tcg-turn-badge${yourTurn || isMyTurnSeat ? ' yours' : ''}${this.props.ended ? ' over' : ''}${!isMyTurnSeat && turnSeat != null ? ' foe' : ''}`}>
@@ -2829,7 +2835,7 @@ export class TcgBoard extends preact.Component<{
 
 			{hint && <div class="tcg-float-hint">{hint}</div>}
 
-			<div class="tcg-replay-controls">
+			{this.props.ended && <div class="tcg-replay-controls">
 				<button type="button" class="button" onClick={this.props.onTogglePause}>
 					<i class={`fa fa-${this.props.paused ? 'play' : 'pause'}`} aria-hidden></i> {this.props.paused ? 'Play' : 'Pause'}
 				</button>
@@ -2839,7 +2845,7 @@ export class TcgBoard extends preact.Component<{
 				<button type="button" class="button" onClick={this.props.onSkip}>
 					<i class="fa fa-fast-forward" aria-hidden></i> Skip to end
 				</button>
-			</div>
+			</div>}
 			<div class="tcg-live-controls">
 				{(this.state.selectedHand != null || this.state.energyPick || this.state.retreatPick || this.state.menuSlot != null) &&
 					<button type="button" class="tcg-cancel" onClick={this.clearSel}>Cancel</button>}
@@ -2863,9 +2869,6 @@ export class TcgBoard extends preact.Component<{
 				}}>
 					End<br />Turn
 				</button>}
-				{this.props.ended && <p class="tcg-waiting">
-					{winName ? `${winName} won.` : (snap.winReason || 'Battle ended.')}
-				</p>}
 			</div>
 
 			{this.state.menuSlot != null && (() => {

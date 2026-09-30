@@ -98,7 +98,7 @@
 	0%, 40% { filter: brightness(1.35) saturate(1.4) hue-rotate(-15deg); }
 	100% { filter: none; }
 }
-.tcg-table > *:not(.tcg-felt):not(.tcg-preview):not(.tcg-inspect):not(.tcg-fx-veil):not(.tcg-toast):not(.tcg-modal):not(.tcg-flyer):not(.tcg-banner):not(.fx-layer):not(.tcg-action-menu):not(.tcg-live-controls):not(.tcg-float-hint):not(.tcg-drag-ghost):not(.tcg-prompt):not(.tcg-arena):not(.tcg-dock-foe):not(.tcg-hud-top):not(.tcg-dock):not(.tcg-wait-banner):not(.tcg-win-banner) {
+.tcg-table > *:not(.tcg-felt):not(.tcg-preview):not(.tcg-inspect):not(.tcg-fx-veil):not(.tcg-toast):not(.tcg-modal):not(.tcg-flyer):not(.tcg-banner):not(.fx-layer):not(.tcg-action-menu):not(.tcg-live-controls):not(.tcg-replay-controls):not(.tcg-float-hint):not(.tcg-drag-ghost):not(.tcg-prompt):not(.tcg-arena):not(.tcg-dock-foe):not(.tcg-hud-top):not(.tcg-dock):not(.tcg-wait-banner):not(.tcg-win-banner) {
 	position: relative;
 	z-index: 1;
 }
@@ -123,6 +123,7 @@
 	box-shadow: none;
 }
 .tcg-hud-top > * { pointer-events: auto; }
+.tcg-hand-count { display: none; }
 .tcg-player {
 	display: flex;
 	align-items: center;
@@ -3793,9 +3794,9 @@ span.tcg-card-backface {
 }
 .tcg-drop-tag { animation-name: tcg-fade-in; }
 
-/* Phone: the Chat toggle sits top-right, so keep the turn badge clear of it */
-.tcg-mobile-board .tcg-hud-top { padding-right: 100px; }
-.tcg-mobile-board .tcg-view-toggle { top: 10px; right: 10px; min-height: 36px; }
+/* Phone: header row holds the name, turn, and Chat. The board starts underneath. */
+.tcg-mobile-board .tcg-hud-top { padding-right: 8px; }
+.tcg-mobile-board .tcg-view-toggle { top: 6px; right: 8px; min-height: 32px; z-index: 30; }
 
 /* FX layer: overlays cross-fade between beats instead of flashing */
 .tcg-table .fx-layer {
@@ -3838,6 +3839,77 @@ span.tcg-card-backface {
 	.tcg-prompt-card:active, .tcg-prompt-orb:active { transform: scale(0.96); }
 }
 @media (max-width: 640px) {
+	.tcg-hud-top {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto 78px;
+		align-items: center;
+		height: 44px;
+		padding: 0 8px 0 8px;
+		z-index: 24;
+		background: linear-gradient(180deg, rgba(0, 0, 0, 0.82), rgba(0, 0, 0, 0.45) 78%, transparent);
+	}
+	.tcg-turn-badge {
+		position: static;
+		min-width: 0;
+		margin: 0;
+		padding: 3px 10px;
+	}
+	.tcg-hand-count {
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+		margin-top: 1px;
+		font-size: 9px;
+		font-weight: 800;
+		letter-spacing: 0.04em;
+		color: #d7e4ff;
+	}
+	.tcg-hand-count::before {
+		content: '';
+		width: 10px;
+		height: 14px;
+		border-radius: 2px;
+		background: linear-gradient(180deg, #3a4a72, #1c2744);
+		border: 1px solid rgba(180, 200, 255, 0.45);
+	}
+	.tcg-dock-foe { display: none; }
+	.tcg-arena {
+		padding-top: 52px;
+		padding-bottom: 70px;
+		grid-template-rows: auto auto;
+		align-content: center;
+		gap: 18px;
+	}
+	.tcg-half { height: auto; }
+	.tcg-field { height: auto; }
+	.tcg-half.foe .tcg-field,
+	.tcg-half.me .tcg-field {
+		height: auto;
+		gap: 6px;
+		grid-template-rows: auto auto;
+	}
+	.tcg-zone.tcg-active-spot { height: auto; }
+	.tcg-side { justify-content: center; gap: 8px; }
+	.tcg-half.foe .tcg-side.left,
+	.tcg-half.foe .tcg-side.right,
+	.tcg-half.me .tcg-side.left,
+	.tcg-half.me .tcg-side.right { justify-content: center; padding: 0; }
+	.tcg-replay-controls {
+		left: 8px;
+		right: 8px;
+		bottom: 68px;
+		max-width: none;
+		justify-content: center;
+		z-index: 20;
+	}
+	.tcg-wait-banner {
+		top: auto;
+		bottom: 72px;
+		transform: none;
+		max-width: min(220px, 70%);
+		z-index: 16;
+		animation: none;
+	}
 	.tcg-hand-mine .tcg-card-playable .tcg-card-inner {
 		box-shadow: 0 0 0 2px rgba(255, 220, 100, 0.95), 0 0 14px rgba(255, 220, 100, 0.45), 0 6px 14px rgba(0, 0, 0, 0.45);
 	}

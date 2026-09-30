@@ -23,7 +23,7 @@ import type { Args } from "./battle-text-parser";
 import { ModifiableValue } from "./battle-tooltips";
 import { Net } from "./client-connection";
 import { BattleLog } from "./battle-log";
-import { TcgBoard, isTcgBattleId, chatEntryForEvent, chatHtmlForEntry, type TcgAction, type TcgEvent, type TcgSnapshot } from "./battle-tcg";
+import { TcgBoard, isTcgBattleId, chatEntryForEvent, chatHtmlForEntry, noteTcgMons, type TcgAction, type TcgEvent, type TcgSnapshot } from "./battle-tcg";
 
 type BattleDesc = {
 	id: RoomID,
@@ -331,6 +331,8 @@ export class BattleRoom extends ChatRoom {
 		this.update(null);
 	}
 	revealTcgEvent(ev: TcgEvent) {
+		noteTcgMons(this.tcgSnapshot?.players);
+		noteTcgMons(this.tcgFxSnapshot?.players);
 		if (typeof ev.seq === 'number' && ev.seq <= this.tcgLastSeq) return;
 		if (typeof ev.seq === 'number') this.tcgLastSeq = Math.max(this.tcgLastSeq, ev.seq);
 		const players = this.tcgFxSnapshot?.players || this.tcgSnapshot?.players;
@@ -761,6 +763,14 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		}
 		case 'win': case 'tie': {
 			const winnerName = args[0] === 'win' ? (args[1] || '').trim() : '';
+			const endingAlready = room.tcgEnded ||
+				room.tcgEvents.some(ev => ev.type === 'over') ||
+				room.tcgQueue.some(item => item.markEnded || item.events?.some(ev => ev.type === 'over'));
+			if (endingAlready) {
+				if (args[0] === 'win' && winnerName && !room.tcgWinner) room.tcgWinner = winnerName;
+				room.update(null);
+				return;
+			}
 			room.enqueueTcg({
 				animate: !PS.prefs.noanim,
 				markEnded: true,
