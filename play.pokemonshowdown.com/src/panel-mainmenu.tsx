@@ -130,6 +130,14 @@ export class MainMenuRoom extends PSRoom {
 				'upkeep', { challstr }
 			).then(res => {
 				if (!res?.username) {
+					let saved = '';
+					try {
+						saved = localStorage.getItem('showdown_username') || '';
+					} catch {}
+					if (saved && toID(saved)) {
+						PS.user.changeName(saved);
+						return;
+					}
 					PS.user.initializing = false;
 					return;
 				}
