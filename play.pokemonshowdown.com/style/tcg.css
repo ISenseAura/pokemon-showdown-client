@@ -1716,9 +1716,23 @@ span.tcg-card-backface {
   100% { transform: translateY(0) scale(1); filter: brightness(1); }
 }
 @keyframes fx-place {
-  0% { transform: translateY(-36px) scale(0.55) rotate(-6deg); opacity: 0; filter: brightness(1.6); }
-  55% { transform: translateY(4px) scale(1.06) rotate(1deg); opacity: 1; }
-  100% { transform: translateY(0) scale(1) rotate(0); opacity: 1; filter: brightness(1); }
+  0% { transform: translateY(-52px) scale(0.78) rotate(-8deg); opacity: 0; filter: brightness(1.55); }
+  38% { transform: translateY(8px) scale(1.06) rotate(1deg); opacity: 1; filter: brightness(1.12); }
+  62% { transform: translateY(-3px) scale(1.01) rotate(0); filter: brightness(1); }
+  100% { transform: none; opacity: 1; filter: none; }
+}
+@keyframes fx-switch {
+  0% { transform: translateY(46px) scale(0.86); opacity: 0; filter: brightness(1.35); }
+  36% { transform: translateY(-10px) scale(1.05); opacity: 1; filter: brightness(1.1); }
+  62% { transform: translateY(4px) scale(1.01); }
+  100% { transform: none; opacity: 1; filter: none; }
+}
+@keyframes fx-ko {
+  0% { opacity: 1; transform: none; filter: none; }
+  8% { transform: scale(1.06); filter: brightness(1.85) saturate(0.5); }
+  22% { transform: scale(1.02) rotate(-3deg); filter: grayscale(0.25) brightness(1.15); }
+  48% { opacity: 1; transform: translateY(10px) rotate(-7deg) scale(0.95); filter: grayscale(0.8) brightness(0.72); }
+  100% { opacity: 0; transform: translateY(42px) rotate(-12deg) scale(0.74); filter: grayscale(1) brightness(0.35); }
 }
 @keyframes fx-evolve {
   0% { transform: scale(0.72) rotate(-10deg); filter: brightness(2.4) saturate(1.6); }
@@ -1726,12 +1740,6 @@ span.tcg-card-backface {
   42% { transform: scale(0.94) rotate(-2deg); filter: brightness(1.5); }
   68% { transform: scale(1.08) rotate(1deg); filter: brightness(1.25); }
   100% { transform: scale(1) rotate(0); filter: brightness(1); }
-}
-@keyframes fx-ko {
-  0% { opacity: 1; transform: scale(1) rotate(0); filter: grayscale(0) brightness(1); }
-  14% { transform: scale(1.1) rotate(-4deg); filter: brightness(1.4); }
-  38% { opacity: 1; transform: scale(1) rotate(-8deg); filter: grayscale(0.4) brightness(0.95); }
-  100% { opacity: 0; transform: scale(0.82) rotate(-12deg) translateY(12px); filter: grayscale(1) brightness(0.55); }
 }
 @keyframes fx-ko-badge {
   0% { transform: translate(-50%, -50%) rotate(-14deg) scale(0.2); opacity: 0; }
@@ -1848,12 +1856,22 @@ span.tcg-card-backface {
 }
 .tcg-mon.fx-hit { animation: fx-hit 0.75s cubic-bezier(.36,.07,.19,.97); }
 .tcg-mon.fx-lunge { animation: fx-lunge 0.7s cubic-bezier(.2,.8,.2,1); }
-.tcg-mon.fx-place { animation: fx-place 0.7s cubic-bezier(.2,.8,.2,1); }
+.tcg-mon.fx-place { animation: fx-place 1.85s cubic-bezier(.2,.8,.2,1) both; z-index: 5; transition: none; }
+.tcg-mon.fx-switch { animation: fx-switch 1.85s cubic-bezier(.2,.85,.2,1) both; z-index: 5; transition: none; }
 .tcg-mon.fx-evolve { animation: fx-evolve 1.35s cubic-bezier(.2,.75,.2,1); }
 .tcg-mon.fx-ko {
-  animation: fx-ko 2.8s ease forwards;
+  animation: fx-ko 2.45s cubic-bezier(.22,.55,.2,1) forwards;
   pointer-events: none;
-  z-index: 4;
+  z-index: 6;
+  transition: none;
+}
+.tcg-mon.fx-ko .tcg-card-inner {
+  animation: fx-ko-glow 2.45s ease forwards;
+}
+@keyframes fx-ko-glow {
+  0%, 100% { box-shadow: 0 8px 18px rgba(0, 0, 0, 0.55); }
+  12% { box-shadow: 0 0 28px rgba(255, 90, 40, 0.9); }
+  50% { box-shadow: 0 8px 18px rgba(80, 20, 10, 0.5); }
 }
 .tcg-mon.fx-ko[data-fx]::after {
   content: 'KO';
@@ -1869,7 +1887,7 @@ span.tcg-card-backface {
   border-radius: 10px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55);
   transform: translate(-50%, -50%) rotate(-14deg);
-  animation: fx-ko-badge 2.8s ease forwards;
+  animation: fx-ko-badge 2.45s cubic-bezier(.22,.55,.2,1) forwards;
 }
 .tcg-mon.fx-pulse, .tcg-mon.fx-ability { animation: fx-pulse 1.15s ease; }
 .tcg-mon.fx-status { animation: fx-status-wobble 0.7s ease; }

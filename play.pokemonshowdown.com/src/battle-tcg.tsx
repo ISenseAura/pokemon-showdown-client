@@ -99,6 +99,8 @@ type FxBeat = {
 	hits?: FxHit[],
 	tie?: boolean,
 	element?: string,
+	slot?: TcgSlot,
+	fromBench?: boolean,
 };
 type PkFx = { cls: string, dataFx?: string, tick?: number, element?: string };
 type KoGhost = {
@@ -131,12 +133,28 @@ function actorIsYou(seat: number | undefined, you?: number | null): boolean {
 	return you != null && seat != null && seat === you;
 }
 function findMonView(players: TcgPlayerView[] | undefined, iid?: string): TcgPokemonView | null {
+	return findMonSlot(players, iid)?.mon || null;
+}
+function findMonSlot(
+	players: TcgPlayerView[] | undefined,
+	iid?: string,
+): { seat: number, slot: TcgSlot, mon: TcgPokemonView } | null {
 	if (!iid || !players) return null;
-	for (const p of players) {
-		if (p.active?.iid === iid) return p.active;
-		for (const m of p.bench || []) if (m?.iid === iid) return m;
+	for (let seat = 0; seat < players.length; seat++) {
+		const p = players[seat];
+		if (!p) continue;
+		if (p.active?.iid === iid) return { seat, slot: 'active', mon: p.active };
+		const bench = p.bench || [];
+		for (let i = 0; i < bench.length; i++) {
+			if (bench[i]?.iid === iid) return { seat, slot: i, mon: bench[i]! };
+		}
 	}
 	return null;
+}
+function placeSlotOf(e: TcgEvent): TcgSlot {
+	if (e.slot === 'active' || e.slot == null || e.slot === '') return 'active';
+	const n = Number(e.slot);
+	return Number.isFinite(n) ? n : 'active';
 }
 function monName(players: TcgPlayerView[] | undefined, iid?: string): string {
 	return findMonView(players, iid)?.name || 'a Pokémon';
@@ -286,7 +304,7 @@ function fxDuration(e: TcgEvent): number {
 	if (t === 'coin') return 2600;
 	if (t === 'attack' || t === 'ability') return 3000;
 	if (t === 'damage' || t === 'heal') return 2600;
-	if (t === 'ko') return 3200;
+	if (t === 'ko') return 2800;
 	if (t === 'over') return 4200;
 	if (t === 'prize' || t === 'prizeTake') return 3000;
 	if (t === 'points') return 2400;
@@ -297,7 +315,7 @@ function fxDuration(e: TcgEvent): number {
 	if (t === 'trainer' || t === 'stadium') return 3200;
 	if (t === 'stadiumEnd') return 2400;
 	if (t === 'energy' || t === 'tool') return 2400;
-	if (t === 'place') return 1600;
+	if (t === 'place') return 2200;
 	if (t === 'evolve') return 2800;
 	if (t === 'discard') return 2000;
 	return 2000;
@@ -537,8 +555,10 @@ function fxFor(
 	}
 	if (e.type === 'place') {
 		const talk = placeTalk(e, players);
+		const slot = placeSlotOf(e);
 		return {
-			kind: 'place', iid: e.iid || '', seat: e.seat, extra: talk.extra, tag: talk.tag,
+			kind: 'place', iid: e.iid || '', seat: e.seat, slot,
+			extra: talk.extra, tag: talk.tag,
 			cardId: e.cardId || '',
 			message: talk.text,
 		};
@@ -752,12 +772,13 @@ function fxFor(
 	};
 }
 
-function pkClass(kind: string): string {
+function pkClass(fx: FxBeat): string {
+	const kind = fx.kind;
 	if (kind === 'damage') return 'fx-hit';
 	if (kind === 'attack') return 'fx-lunge';
 	if (kind === 'heal') return 'fx-heal';
 	if (kind === 'ko') return 'fx-ko';
-	if (kind === 'place') return 'fx-place';
+	if (kind === 'place') return fx.fromBench ? 'fx-switch' : 'fx-place';
 	if (kind === 'evolve') return 'fx-evolve';
 	if (kind === 'energy' || kind === 'tool') return 'fx-energy';
 	if (kind === 'status') return 'fx-status';
@@ -778,7 +799,7 @@ function buildPkFx(fx: FxBeat, tick = 0): { [iid: string]: PkFx } {
 		if (fx.kind === 'energy') dataFx = '⚡';
 		if (fx.kind === 'evolve') dataFx = '✨';
 		if (fx.kind === 'ko') dataFx = 'KO';
-		put(fx.iid, `${pkClass(fx.kind)}${fx.src ? ` src-${fx.src}` : ''}`, dataFx || undefined);
+		put(fx.iid, `${pkClass(fx)}${fx.src ? ` src-${fx.src}` : ''}`, dataFx || undefined);
 	}
 	if (fx.targetIid && fx.targetIid !== fx.iid) put(fx.targetIid, 'fx-hit');
 	for (const h of fx.hits || []) {
@@ -975,10 +996,7 @@ class FxOverlay extends preact.Component<{ fx: FxBeat | null, you?: number | nul
 			</>);
 		}
 		if (k === 'place') {
-			const face = art || <span class="fx-mini-card face"></span>;
-			return wrap('place', <>
-				<div class={`fx-place-fly ${seat}`} data-target={fx.iid || ''}>{face}</div>
-			</>);
+			return wrap('place', cap(fx.tag || (fx.fromBench ? 'SWITCH' : 'INTO PLAY'), fx.extra));
 		}
 		if (k === 'evolve') {
 			const fromArt = fx.fromCardId ? <MiniArt cardId={fx.fromCardId} /> : null;
@@ -1716,6 +1734,10 @@ export class TcgBoard extends preact.Component<{
 		pkFx: {} as { [iid: string]: PkFx },
 		/** Kept in the vacated slot while KO FX plays (snapshot already removed the mon). */
 		koGhost: null as KoGhost | null,
+		/** iids that have already fainted this payload — stay hidden after the KO beat. */
+		koHide: {} as { [iid: string]: true },
+		/** Incoming Pokémon shown in its destination slot during a place / switch-in beat. */
+		placeIn: null as { seat: number, slot: TcgSlot, mon: TcgPokemonView } | null,
 		inspect: null as Preview | null,
 		menuSlot: null as TcgSlot | null,
 		endTurnConfirm: false,
@@ -1793,7 +1815,7 @@ export class TcgBoard extends preact.Component<{
 	};
 
 	clearFx() {
-		this.setState({ fx: null, pkFx: {}, koGhost: null });
+		this.setState({ fx: null, pkFx: {}, koGhost: null, koHide: {}, placeIn: null });
 	}
 
 	rememberMons(snap: TcgSnapshot) {
@@ -1842,18 +1864,22 @@ export class TcgBoard extends preact.Component<{
 	}
 
 	displayMon(seat: number, slot: TcgSlot, live: TcgPokemonView | null): TcgPokemonView | null {
-		if (live) return live;
+		const placed = this.state.placeIn;
+		if (placed && placed.seat === seat && sameSlot(placed.slot, slot)) return placed.mon;
 		const g = this.state.koGhost;
-		if (!g || g.seat !== seat) return null;
-		if (g.slot !== slot && String(g.slot) !== String(slot)) return null;
-		return {
-			iid: g.iid,
-			cardId: g.cardId,
-			name: g.name,
-			image: g.image,
-			hp: g.hp ?? 0,
-			maxHp: g.maxHp ?? g.hp ?? 0,
-		};
+		if (g && g.seat === seat && sameSlot(g.slot, slot)) {
+			return {
+				iid: g.iid,
+				cardId: g.cardId,
+				name: g.name,
+				image: g.image,
+				hp: g.hp ?? 0,
+				maxHp: g.maxHp ?? g.hp ?? 0,
+			};
+		}
+		if (live && this.state.koHide[live.iid]) return null;
+		if (live && placed && live.iid === placed.mon.iid) return null;
+		return live;
 	}
 
 	aimFlyers() {
@@ -1925,14 +1951,35 @@ export class TcgBoard extends preact.Component<{
 		const show = (fx: FxBeat, e?: TcgEvent) => {
 			fxTick++;
 			let koGhost: KoGhost | null = null;
+			let placeIn: TcgBoard['state']['placeIn'] = null;
+			const koHide = { ...this.state.koHide };
 			if (fx.kind === 'ko') {
 				koGhost = e ? this.ghostForKo(fx, e) : (fx.iid ? this.monMemory[fx.iid] || null : null);
 				if (koGhost && !fx.extra) fx.extra = koGhost.name;
 				if (koGhost && (!fx.message || fx.message.includes('a Pokémon'))) {
 					fx.message = `${koGhost.name} was Knocked Out`;
 				}
+				if (fx.iid) koHide[fx.iid] = true;
 			}
-			this.setState({ fx, pkFx: buildPkFx(fx, fxTick), koGhost });
+			if (fx.kind === 'place' && fx.iid) {
+				const nextPlayers = this.props.fxSnapshot?.players || this.props.snapshot.players;
+				const incoming = findMonView(nextPlayers, fx.iid) ||
+					(fx.cardId ? {
+						iid: fx.iid,
+						cardId: fx.cardId,
+						name: fx.extra || cardLabel(fx.cardId),
+						hp: 0,
+						maxHp: 0,
+						image: this.monMemory[fx.iid]?.image,
+					} : null);
+				const dest = findMonSlot(nextPlayers, fx.iid);
+				const seat = dest?.seat ?? fx.seat ?? 0;
+				const slot = dest?.slot ?? fx.slot ?? 'active';
+				const fromOld = findMonSlot(this.props.snapshot.players, fx.iid);
+				fx.fromBench = !!(fromOld && fromOld.slot !== 'active' && slot === 'active');
+				if (incoming) placeIn = { seat, slot, mon: incoming };
+			}
+			this.setState({ fx, pkFx: buildPkFx(fx, fxTick), koGhost, koHide, placeIn });
 		};
 
 		const step = () => {
@@ -2383,6 +2430,7 @@ export class TcgBoard extends preact.Component<{
 	override render() {
 		const snap = this.props.snapshot;
 		this.rememberMons(snap);
+		this.rememberMons(this.props.fxSnapshot || snap);
 		const meIndex = snap.you != null ? snap.you : 0;
 		const foeIndex = meIndex === 0 ? 1 : 0;
 		const me = snap.players[meIndex];
