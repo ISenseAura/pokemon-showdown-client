@@ -158,17 +158,70 @@ function placeSlotOf(e: TcgEvent): TcgSlot {
 }
 /** Names from earlier boards, so a KO still has a name after the Pokémon leaves play. */
 const seenMonNames = new Map<string, string>();
+const seenCardNames = new Map<string, string>();
 export function noteTcgMons(players: TcgPlayerView[] | undefined) {
 	if (!players) return;
 	for (const p of players) {
 		const mons = [p?.active, ...(p?.bench || [])];
 		for (const mon of mons) {
 			if (mon?.iid && mon.name) seenMonNames.set(mon.iid, mon.name);
+			if (mon?.cardId && mon.name && mon.name !== mon.cardId) seenCardNames.set(mon.cardId, mon.name);
 		}
 	}
 }
 function monName(players: TcgPlayerView[] | undefined, iid?: string): string {
 	return findMonView(players, iid)?.name || (iid && seenMonNames.get(iid)) || 'a Pokémon';
+}
+const printedNames: { [id: string]: string } = {
+	'base1-97': 'Grass Energy',
+	'base1-98': 'Fire Energy',
+	'base1-99': 'Water Energy',
+	'base1-100': 'Lightning Energy',
+	'base1-101': 'Psychic Energy',
+	'base1-102': 'Fighting Energy',
+};
+let printedNamesLoaded = false;
+function loadPrintedNames() {
+	if (printedNamesLoaded || typeof fetch !== 'function') return;
+	printedNamesLoaded = true;
+	fetch('/tcg-names.json').then(res => res.ok ? res.json() : null).then(data => {
+		if (data) Object.assign(printedNames, data);
+	}).catch(() => { /* keep board names and the basic-energy map */ });
+}
+loadPrintedNames();
+function printedName(id?: string): string {
+	if (!id) return '';
+	if (printedNames[id]) return printedNames[id];
+	const promo = /^P-([A-Za-z])-0*(\d+)$/.exec(id);
+	if (promo) {
+		const key = `PROMO-${promo[1].toUpperCase()}-${promo[2]}`;
+		if (printedNames[key]) return printedNames[key];
+	}
+	const num = /^(.*)-0*(\d+)$/.exec(id);
+	if (num && printedNames[`${num[1]}-${num[2]}`]) return printedNames[`${num[1]}-${num[2]}`];
+	const energy = /^energy-([a-z]+)$/i.exec(id);
+	if (energy) {
+		const t = energy[1].toLowerCase();
+		return t.charAt(0).toUpperCase() + t.slice(1) + ' Energy';
+	}
+	return '';
+}
+function cardName(players: TcgPlayerView[] | undefined, cardId?: string, iid?: string): string {
+	const fromIid = findMonView(players, iid)?.name;
+	if (fromIid && fromIid !== cardId) return fromIid;
+	if (cardId && players) {
+		for (let s = 0; s < players.length; s++) {
+			const p = players[s];
+			const mons = [p?.active, ...(p?.bench || [])];
+			for (let i = 0; i < mons.length; i++) {
+				const mon = mons[i];
+				if (mon?.cardId === cardId && mon.name && mon.name !== cardId) return mon.name;
+			}
+		}
+	}
+	if (iid && seenMonNames.get(iid) && seenMonNames.get(iid) !== cardId) return seenMonNames.get(iid)!;
+	if (cardId && seenCardNames.get(cardId)) return seenCardNames.get(cardId)!;
+	return printedName(cardId);
 }
 function cardLabel(id?: string): string {
 	return id || 'a card';
@@ -332,7 +385,7 @@ function fxDuration(e: TcgEvent): number {
 	return 2000;
 }
 function placeTalk(e: TcgEvent, players?: TcgPlayerView[]): { tag: string, extra: string, text: string } {
-	const name = findMonView(players, e.iid)?.name || cardLabel(e.cardId);
+	const name = cardName(players, e.cardId, e.iid) || cardLabel(e.cardId);
 	const actor = whoName(players, e.seat);
 	const bench = e.slot !== 'active' && e.slot != null && e.slot !== '';
 	// Live battles don't always include prior act; infer from slot.
@@ -367,7 +420,7 @@ export type TcgChatEntry = { kind: string, label: string, text: string, turn?: n
 export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[]): TcgChatEntry | null {
 	const w = (seat: number) => whoName(players, seat);
 	const poke = (iid?: string) => monName(players, iid);
-	const nm = (id?: string) => cardLabel(id);
+	const nm = (id?: string) => cardName(players, id) || cardLabel(id);
 	switch (ev.type) {
 	case 'act':
 		if (ev.action?.type === 'discardPick') {

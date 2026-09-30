@@ -1720,11 +1720,13 @@ span.tcg-card-backface {
  * Replay-player-style FX (ported from Unreal-Bot graphics)
  *********************************************************/
 @keyframes fx-hit {
-  0%, 100% { transform: translate(0); filter: brightness(1); }
-  12% { transform: translate(-12px, 3px) rotate(-3deg); filter: brightness(1.85) saturate(1.6) hue-rotate(-8deg); }
-  28% { transform: translate(11px, -3px) rotate(3deg); filter: brightness(1.45); }
-  48% { transform: translate(-7px, 2px) rotate(-1deg); filter: brightness(1.25); }
-  68% { transform: translate(4px, 0); }
+  0% { transform: translate(0) scale(1); filter: brightness(1); }
+  8% { transform: translate(-16px, 5px) rotate(-6deg) scale(0.94); filter: brightness(2.4) saturate(1.8); }
+  18% { transform: translate(14px, -6px) rotate(5deg) scale(1.04); filter: brightness(1.7); }
+  32% { transform: translate(-10px, 3px) rotate(-3deg) scale(0.98); filter: brightness(1.35); }
+  50% { transform: translate(6px, -2px) rotate(2deg); }
+  70% { transform: translate(-3px, 1px); filter: brightness(1.1); }
+  100% { transform: translate(0) scale(1); filter: brightness(1); }
 }
 @keyframes fx-lunge {
   0% { transform: translateY(0) scale(1); filter: brightness(1); }
@@ -1871,7 +1873,7 @@ span.tcg-card-backface {
   30% { transform: translate(-50%, -50%) scale(1.3); opacity: 1; }
   100% { transform: translate(-50%, -70%) scale(0.8); opacity: 0; }
 }
-.tcg-mon.fx-hit { animation: fx-hit 0.75s cubic-bezier(.36,.07,.19,.97); transition: none; }
+.tcg-mon.fx-hit { animation: fx-hit 0.85s cubic-bezier(.36,.07,.19,.97); transition: none; }
 .tcg-mon.fx-lunge { animation: fx-lunge 0.7s cubic-bezier(.2,.8,.2,1); transition: none; }
 .tcg-mon.fx-place { animation: fx-place 1.85s cubic-bezier(.2,.8,.2,1) both; z-index: 5; transition: none; }
 .tcg-mon.fx-switch { animation: fx-switch 1.85s cubic-bezier(.2,.85,.2,1) both; z-index: 5; transition: none; }
@@ -3394,17 +3396,41 @@ span.tcg-card-backface {
 	width: auto !important;
 }
 
-/* Type hit — plays on the card that is taking damage. */
+/* Type hit — a blast on the card that is taking damage. Debris flies off the card. */
 .type-hit {
 	position: absolute;
-	inset: 0;
+	inset: -30%;
 	z-index: 6;
 	pointer-events: none;
-	overflow: hidden;
-	border-radius: 8px;
+	overflow: visible;
 }
 .type-hit .core,
-.type-hit .p { position: absolute; left: 50%; top: 48%; display: block; }
+.type-hit .p { position: absolute; left: 50%; top: 46%; display: block; }
+.type-hit .core {
+	width: 130%;
+	height: 130%;
+	border-radius: 50%;
+	transform: translate(-50%, -50%);
+	mix-blend-mode: screen;
+	animation: type-blast 0.55s ease-out forwards;
+}
+.type-hit .p { animation: type-shard-out 0.7s cubic-bezier(.15, .7, .2, 1) forwards; }
+.type-hit .p1 { --dx: -46px; --dy: -38px; --rot: -40deg; }
+.type-hit .p2 { --dx: 44px; --dy: -28px; --rot: 50deg; animation-delay: 0.02s; }
+.type-hit .p3 { --dx: -18px; --dy: 42px; --rot: 28deg; animation-delay: 0.04s; }
+.type-hit .p4 { --dx: 28px; --dy: 36px; --rot: -55deg; animation-delay: 0.03s; }
+.type-hit .p5 { --dx: -40px; --dy: 8px; --rot: 18deg; animation-delay: 0.05s; }
+.type-hit .p6 { --dx: 12px; --dy: -44px; --rot: -22deg; animation-delay: 0.01s; }
+@keyframes type-blast {
+	0% { opacity: 0; transform: translate(-50%, -50%) scale(0.12); }
+	16% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+	100% { opacity: 0; transform: translate(-50%, -50%) scale(1.55); }
+}
+@keyframes type-shard-out {
+	0% { opacity: 0; transform: translate(-50%, -50%) scale(0.2) rotate(0); }
+	12% { opacity: 1; }
+	100% { opacity: 0; transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(1.15) rotate(var(--rot)); }
+}
 .tcg-mon[data-el="fire"][data-fx]::after { background: #9a3412; border-color: #fdba74; }
 .tcg-mon[data-el="water"][data-fx]::after { background: #1d4ed8; border-color: #bfdbfe; }
 .tcg-mon[data-el="lightning"][data-fx]::after { background: #a16207; border-color: #fde047; }
@@ -3418,240 +3444,119 @@ span.tcg-card-backface {
 .tcg-mon[data-el="colorless"][data-fx]::after { background: #334155; border-color: #f8fafc; }
 
 .type-hit.t-fire .core {
-	width: 70%; height: 80%;
-	transform: translate(-50%, -40%);
-	background: radial-gradient(circle at 50% 80%, rgba(255, 220, 80, 0.95), rgba(255, 80, 20, 0.55) 45%, transparent 70%);
-	filter: blur(1px);
-	animation: type-fire-core 1.15s ease-out forwards;
+	background: radial-gradient(circle, #fff7c2 0%, #f97316 28%, rgba(185, 28, 28, 0.55) 55%, transparent 72%);
+	filter: blur(0.5px);
 }
 .type-hit.t-fire .p {
-	width: 14px; height: 28px; border-radius: 40% 40% 50% 50%;
-	background: linear-gradient(#fff7c2, #f97316 55%, transparent);
-	animation: type-flame 1.1s ease-in forwards;
+	width: 16px; height: 34px; border-radius: 40% 40% 50% 50%;
+	background: linear-gradient(#fff, #fde047 20%, #ef4444 70%, transparent);
+	box-shadow: 0 0 12px #f97316;
 }
-.type-hit.t-fire .p1 { margin-left: -18px; }
-.type-hit.t-fire .p2 { margin-left: 6px; animation-delay: 0.08s; }
-.type-hit.t-fire .p3 { margin-left: -6px; height: 36px; animation-delay: 0.14s; }
-@keyframes type-fire-core {
-	0% { opacity: 0; transform: translate(-50%, -20%) scale(0.6); }
-	25% { opacity: 1; }
-	100% { opacity: 0; transform: translate(-50%, -55%) scale(1.15); }
-}
-@keyframes type-flame {
-	0% { opacity: 0; transform: translate(-50%, 10px) scaleY(0.4); }
-	30% { opacity: 1; }
-	100% { opacity: 0; transform: translate(-50%, -46px) scaleY(1.3); }
-}
-
 .type-hit.t-water .core {
-	width: 120%; height: 28%;
-	top: 62%;
-	background: linear-gradient(180deg, rgba(255,255,255,0.85), rgba(56, 160, 255, 0.75));
-	border-radius: 40%;
-	animation: type-wave 1.15s ease-out forwards;
+	background: radial-gradient(circle, rgba(255,255,255,0.95), rgba(56, 189, 248, 0.75) 35%, rgba(29, 78, 216, 0.35) 60%, transparent 74%);
 }
 .type-hit.t-water .p {
-	width: 8px; height: 8px; border-radius: 50%;
-	background: #e0f2fe;
-	box-shadow: 0 0 8px #38bdf8;
-	animation: type-drop 1s ease-out forwards;
+	width: 14px; height: 14px; border-radius: 50% 50% 50% 0;
+	background: linear-gradient(#fff, #7dd3fc);
+	box-shadow: 0 0 10px #38bdf8;
+	rotate: 45deg;
 }
-.type-hit.t-water .p1 { margin-left: -22px; animation-delay: 0.05s; }
-.type-hit.t-water .p2 { margin-left: 16px; }
-.type-hit.t-water .p3 { margin-left: -4px; margin-top: -16px; }
-@keyframes type-wave {
-	0% { opacity: 0; transform: translate(-50%, 16px) scaleX(0.4); }
-	35% { opacity: 1; transform: translate(-50%, 0) scaleX(1); }
-	100% { opacity: 0; transform: translate(-50%, -28px) scaleX(1.2); }
-}
-@keyframes type-drop {
-	0% { opacity: 0; transform: translate(-50%, 8px); }
-	40% { opacity: 1; }
-	100% { opacity: 0; transform: translate(-50%, -36px); }
-}
-
 .type-hit.t-lightning .core {
-	width: 18px; height: 78%;
-	background: linear-gradient(#fff, #facc15 40%, #f97316);
-	clip-path: polygon(40% 0, 100% 0, 55% 42%, 100% 42%, 0 100%, 40% 52%, 0 52%);
-	filter: drop-shadow(0 0 8px #fde047);
-	animation: type-bolt 0.7s ease-out forwards;
+	width: 22px; height: 92%; border-radius: 0;
+	background: linear-gradient(#fff, #facc15 35%, #f97316);
+	clip-path: polygon(42% 0, 100% 0, 52% 40%, 100% 40%, 0 100%, 38% 54%, 0 54%);
+	filter: drop-shadow(0 0 10px #fde047);
+	animation: type-bolt 0.55s ease-out forwards;
 }
 .type-hit.t-lightning .p {
-	width: 6px; height: 6px; border-radius: 50%; background: #fff;
-	box-shadow: 0 0 10px #facc15;
-	animation: type-spark 0.8s ease-out forwards;
+	width: 10px; height: 10px; border-radius: 50%;
+	background: #fff; box-shadow: 0 0 14px #facc15;
 }
-.type-hit.t-lightning .p1 { margin-left: -24px; margin-top: -10px; }
-.type-hit.t-lightning .p2 { margin-left: 20px; margin-top: 8px; }
-.type-hit.t-lightning .p3 { margin-left: 8px; margin-top: -28px; }
 @keyframes type-bolt {
-	0% { opacity: 0; transform: translate(-50%, -50%) scaleY(0.2); }
-	20% { opacity: 1; transform: translate(-50%, -50%) scaleY(1); }
-	35% { opacity: 0.2; }
-	50% { opacity: 1; }
+	0% { opacity: 0; transform: translate(-50%, -50%) scaleY(0.15); }
+	12% { opacity: 1; transform: translate(-50%, -50%) scaleY(1); }
+	28% { opacity: 0.15; }
+	42% { opacity: 1; }
 	100% { opacity: 0; }
-}
-@keyframes type-spark {
-	0% { opacity: 0; transform: translate(-50%, -50%) scale(0.2); }
-	30% { opacity: 1; transform: translate(-50%, -50%) scale(1.4); }
-	100% { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
-}
-
-.type-hit.t-grass .p {
-	width: 12px; height: 18px; border-radius: 0 80% 0 80%;
-	background: linear-gradient(#bbf7d0, #16a34a);
-	animation: type-leaf 1.2s ease-out forwards;
 }
 .type-hit.t-grass .core {
-	width: 80%; height: 80%;
-	background: radial-gradient(circle, rgba(74, 222, 128, 0.45), transparent 68%);
-	animation: type-glow 1.1s ease-out forwards;
+	background: radial-gradient(circle, rgba(220, 252, 231, 0.9), rgba(22, 163, 74, 0.65) 40%, transparent 70%);
 }
-.type-hit.t-grass .p1 { margin-left: -20px; rotate: -30deg; }
-.type-hit.t-grass .p2 { margin-left: 12px; rotate: 24deg; animation-delay: 0.1s; }
-.type-hit.t-grass .p3 { margin-left: -4px; margin-top: -18px; rotate: 8deg; }
-@keyframes type-leaf {
-	0% { opacity: 0; transform: translate(-50%, 20px) rotate(0); }
-	30% { opacity: 1; }
-	100% { opacity: 0; transform: translate(-50%, -40px) rotate(40deg); }
+.type-hit.t-grass .p {
+	width: 14px; height: 26px; border-radius: 0 80% 0 80%;
+	background: linear-gradient(#ecfccb, #15803d);
+	box-shadow: 0 0 8px #4ade80;
 }
-@keyframes type-glow {
-	0% { opacity: 0; transform: translate(-50%, -50%) scale(0.5); }
-	40% { opacity: 1; }
-	100% { opacity: 0; transform: translate(-50%, -50%) scale(1.2); }
-}
-
 .type-hit.t-psychic .core {
-	width: 70%; height: 70%; border-radius: 50%;
-	border: 3px solid rgba(232, 121, 249, 0.9);
-	box-shadow: 0 0 16px #c084fc, inset 0 0 12px rgba(192, 132, 252, 0.6);
-	animation: type-psi 1.15s ease-out forwards;
+	background: radial-gradient(circle, rgba(250, 232, 255, 0.95), rgba(168, 85, 247, 0.7) 36%, transparent 70%);
+	box-shadow: 0 0 22px #c084fc;
 }
 .type-hit.t-psychic .p {
-	width: 46%; height: 46%; border-radius: 50%;
-	border: 2px solid rgba(250, 232, 255, 0.8);
-	animation: type-psi 1.15s ease-out forwards;
+	width: 18px; height: 18px;
+	background: #f5d0fe;
+	clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+	box-shadow: 0 0 10px #e879f9;
 }
-.type-hit.t-psychic .p2 { animation-delay: 0.15s; }
-@keyframes type-psi {
-	0% { opacity: 0; transform: translate(-50%, -50%) scale(0.2) rotate(0); }
-	40% { opacity: 1; }
-	100% { opacity: 0; transform: translate(-50%, -50%) scale(1.35) rotate(50deg); }
-}
-
 .type-hit.t-fighting .core {
-	width: 90%; height: 90%;
+	border-radius: 0;
 	background:
-		linear-gradient(68deg, transparent 46%, #fdba74 46%, #fdba74 54%, transparent 54%),
-		linear-gradient(-24deg, transparent 46%, #fb923c 46%, #fb923c 54%, transparent 54%);
-	animation: type-crack 0.9s ease-out forwards;
+		linear-gradient(72deg, transparent 46%, #ffedd5 46% 48%, #ea580c 48% 52%, transparent 52%),
+		linear-gradient(-18deg, transparent 44%, #fdba74 44% 47%, #9a3412 47% 51%, transparent 51%),
+		radial-gradient(circle, rgba(255, 237, 213, 0.85), rgba(194, 65, 12, 0.45) 42%, transparent 68%);
 }
 .type-hit.t-fighting .p {
-	width: 18px; height: 18px; border-radius: 50%;
-	background: rgba(120, 53, 15, 0.55);
-	filter: blur(2px);
-	animation: type-dust 0.9s ease-out forwards;
+	width: 16px; height: 12px; border-radius: 2px;
+	background: linear-gradient(#fed7aa, #9a3412);
+	box-shadow: 0 0 6px rgba(0, 0, 0, 0.45);
 }
-.type-hit.t-fighting .p1 { margin-left: -16px; margin-top: 8px; }
-.type-hit.t-fighting .p2 { margin-left: 14px; }
-@keyframes type-crack {
-	0% { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
-	25% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-	100% { opacity: 0; }
-}
-@keyframes type-dust {
-	0% { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
-	40% { opacity: 0.9; }
-	100% { opacity: 0; transform: translate(-50%, -70%) scale(1.6); }
-}
-
 .type-hit.t-darkness .core {
-	width: 100%; height: 100%;
-	background: radial-gradient(circle at 50% 55%, rgba(15, 10, 40, 0.15), rgba(30, 10, 60, 0.82) 70%);
-	animation: type-glow 1.2s ease-out forwards;
+	mix-blend-mode: multiply;
+	background: radial-gradient(circle, rgba(10, 6, 20, 0.2), rgba(49, 10, 80, 0.85) 45%, transparent 72%);
+	animation-duration: 0.7s;
 }
 .type-hit.t-darkness .p {
-	width: 22px; height: 22px; border-radius: 50%;
-	background: radial-gradient(circle, #4c1d95, transparent 70%);
-	filter: blur(1px);
-	animation: type-smoke 1.2s ease-out forwards;
+	width: 20px; height: 28px; border-radius: 40% 40% 45% 45%;
+	background: linear-gradient(#1e1b4b, #4c1d95 40%, transparent);
+	filter: blur(0.4px);
 }
-.type-hit.t-darkness .p1 { margin-left: -18px; }
-.type-hit.t-darkness .p2 { margin-left: 10px; animation-delay: 0.1s; }
-.type-hit.t-darkness .p3 { margin-top: -14px; }
-@keyframes type-smoke {
-	0% { opacity: 0; transform: translate(-50%, 8px) scale(0.5); }
-	35% { opacity: 0.95; }
-	100% { opacity: 0; transform: translate(-50%, -30px) scale(1.5); }
-}
-
 .type-hit.t-metal .core {
-	width: 80%; height: 8px;
-	background: linear-gradient(90deg, transparent, #f8fafc, #94a3b8, transparent);
-	box-shadow: 0 0 10px #e2e8f0;
-	animation: type-shard 0.85s ease-out forwards;
+	border-radius: 0;
+	width: 120%; height: 14px;
+	background: linear-gradient(90deg, transparent, #fff 20%, #e2e8f0 50%, #64748b 80%, transparent);
+	box-shadow: 0 0 16px #f8fafc;
 }
 .type-hit.t-metal .p {
-	width: 64%; height: 5px;
-	background: linear-gradient(90deg, transparent, #cbd5e1, transparent);
-	animation: type-shard 0.85s ease-out forwards;
-}
-.type-hit.t-metal .p1 { rotate: 32deg; animation-delay: 0.06s; }
-.type-hit.t-metal .p2 { rotate: -28deg; animation-delay: 0.12s; }
-@keyframes type-shard {
-	0% { opacity: 0; transform: translate(-70%, -50%) scaleX(0.2); }
-	30% { opacity: 1; transform: translate(-50%, -50%) scaleX(1); }
-	100% { opacity: 0; transform: translate(-30%, -50%) scaleX(1.05); }
-}
-
-.type-hit.t-fairy .p {
-	width: 8px; height: 8px;
-	background: #fbcfe8;
-	box-shadow: 0 0 8px #f472b6;
-	clip-path: polygon(50% 0, 62% 38%, 100% 50%, 62% 62%, 50% 100%, 38% 62%, 0 50%, 38% 38%);
-	animation: type-spark 1.15s ease-out forwards;
+	width: 22px; height: 6px;
+	background: linear-gradient(90deg, transparent, #f8fafc, #94a3b8);
+	box-shadow: 0 0 8px #e2e8f0;
 }
 .type-hit.t-fairy .core {
-	width: 64%; height: 64%; border-radius: 50%;
-	background: radial-gradient(circle, rgba(244, 114, 182, 0.55), transparent 70%);
-	animation: type-glow 1.15s ease-out forwards;
+	background: radial-gradient(circle, #fff 0%, #f9a8d4 30%, rgba(219, 39, 119, 0.55) 55%, transparent 72%);
 }
-.type-hit.t-fairy .p1 { margin-left: -18px; margin-top: -12px; }
-.type-hit.t-fairy .p2 { margin-left: 14px; margin-top: 6px; animation-delay: 0.1s; }
-.type-hit.t-fairy .p3 { margin-left: -2px; margin-top: 16px; animation-delay: 0.16s; }
-.type-hit.t-fairy .p4 { margin-left: 4px; margin-top: -22px; }
-
-.type-hit.t-dragon .core {
-	width: 88%; height: 10px;
-	background: linear-gradient(90deg, transparent, #fde68a, #7c3aed, transparent);
-	box-shadow: 0 0 12px #c4b5fd;
-	rotate: -18deg;
-	animation: type-shard 0.9s ease-out forwards;
-}
-.type-hit.t-dragon .p1, .type-hit.t-dragon .p2 {
-	width: 70%; height: 7px;
-	background: linear-gradient(90deg, transparent, #ddd6fe, #fbbf24, transparent);
-	animation: type-shard 0.9s ease-out forwards;
-}
-.type-hit.t-dragon .p1 { rotate: 22deg; }
-.type-hit.t-dragon .p2 { rotate: -48deg; animation-delay: 0.08s; }
-.type-hit.t-dragon .core { animation-name: type-shard; }
-
-.type-hit.t-colorless .core {
-	width: 16px; height: 16px; border-radius: 50%;
+.type-hit.t-fairy .p {
+	width: 14px; height: 14px;
 	background: #fff;
-	box-shadow: 0 0 16px #fff;
-	animation: type-spark 0.9s ease-out forwards;
+	box-shadow: 0 0 10px #f472b6;
+	clip-path: polygon(50% 0, 65% 35%, 100% 50%, 65% 65%, 50% 100%, 35% 65%, 0 50%, 35% 35%);
+}
+.type-hit.t-dragon .core {
+	background: radial-gradient(circle, #fde68a 0%, #7c3aed 38%, rgba(76, 29, 149, 0.4) 62%, transparent 74%);
+	box-shadow: 0 0 18px #c4b5fd;
+}
+.type-hit.t-dragon .p {
+	width: 26px; height: 8px;
+	background: linear-gradient(90deg, transparent, #fde68a, #a78bfa);
+	box-shadow: 0 0 10px #fbbf24;
+}
+.type-hit.t-colorless .core {
+	background: radial-gradient(circle, #fff, rgba(226, 232, 240, 0.7) 40%, transparent 70%);
+	box-shadow: 0 0 18px #fff;
 }
 .type-hit.t-colorless .p {
-	width: 70%; height: 3px; background: rgba(255,255,255,0.9);
-	animation: type-shard 0.8s ease-out forwards;
+	width: 18px; height: 4px;
+	background: #fff;
+	box-shadow: 0 0 8px #e2e8f0;
 }
-.type-hit.t-colorless .p1 { rotate: 0deg; }
-.type-hit.t-colorless .p2 { rotate: 45deg; }
-.type-hit.t-colorless .p3 { rotate: 90deg; }
-.type-hit.t-colorless .p4 { rotate: 135deg; }
 
 /*********************************************************
  * Motion polish — every state change eases instead of snapping
