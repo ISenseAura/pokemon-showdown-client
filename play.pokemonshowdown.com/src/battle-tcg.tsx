@@ -1715,6 +1715,8 @@ export class TcgBoard extends preact.Component<{
 	snapshot: TcgSnapshot,
 	events: TcgEvent[],
 	fxKey: number,
+	/** Bumps when playback is cancelled (skip / replay) so the current beat stops. */
+	halt?: number,
 	/** Board after this beat. Display keeps `snapshot` until the beat finishes. */
 	fxSnapshot?: TcgSnapshot | null,
 	waiting: boolean,
@@ -1725,6 +1727,10 @@ export class TcgBoard extends preact.Component<{
 	/** Fired when a beat starts, including events that share that beat. */
 	onEvent?: (ev: TcgEvent) => void,
 	onFxDone?: () => boolean,
+	paused?: boolean,
+	onTogglePause?: () => void,
+	onReplay?: () => void,
+	onSkip?: () => void,
 }> {
 	override state = {
 		selectedHand: null as number | null,
@@ -1788,6 +1794,13 @@ export class TcgBoard extends preact.Component<{
 		window.addEventListener('keydown', this.onKeyDown);
 	}
 	override componentDidUpdate(prev: this['props'], prevState: this['state']) {
+		if (this.props.halt !== prev.halt) {
+			this.fxPending = [];
+			this.fxBusy = false;
+			if (this.timer != null) window.clearTimeout(this.timer);
+			this.timer = null;
+			this.clearFx();
+		}
 		if (this.props.fxKey !== prev.fxKey) {
 			this.stashHands(prev.fxSnapshot || prev.snapshot);
 			this.playFx(this.props.events);
@@ -2816,6 +2829,17 @@ export class TcgBoard extends preact.Component<{
 
 			{hint && <div class="tcg-float-hint">{hint}</div>}
 
+			<div class="tcg-replay-controls">
+				<button type="button" class="button" onClick={this.props.onTogglePause}>
+					<i class={`fa fa-${this.props.paused ? 'play' : 'pause'}`} aria-hidden></i> {this.props.paused ? 'Play' : 'Pause'}
+				</button>
+				<button type="button" class="button" onClick={this.props.onReplay}>
+					<i class="fa fa-undo" aria-hidden></i> Replay
+				</button>
+				<button type="button" class="button" onClick={this.props.onSkip}>
+					<i class="fa fa-fast-forward" aria-hidden></i> Skip to end
+				</button>
+			</div>
 			<div class="tcg-live-controls">
 				{(this.state.selectedHand != null || this.state.energyPick || this.state.retreatPick || this.state.menuSlot != null) &&
 					<button type="button" class="tcg-cancel" onClick={this.clearSel}>Cancel</button>}

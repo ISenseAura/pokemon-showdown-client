@@ -1342,6 +1342,22 @@ span.tcg-card-backface {
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
+.tcg-replay-controls {
+	position: absolute;
+	left: 8px;
+	bottom: 70px;
+	z-index: 18;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	max-width: min(280px, 70%);
+	pointer-events: auto;
+}
+.tcg-replay-controls .button {
+	font-size: 11px;
+	padding: 4px 8px;
+	margin: 0;
+}
 .tcg-live-controls {
 	position: absolute;
 	right: 14px;
@@ -3289,6 +3305,7 @@ span.tcg-card-backface {
 	.tcg-hand-foe .tcg-card-fan { margin-left: -24px; }
 	.tcg-float-hint { bottom: 64px; font-size: 8pt; max-width: 90%; }
 	.tcg-live-controls { right: 8px; bottom: 64px; }
+	.tcg-replay-controls { bottom: 78px; }
 	.fx-draw-rail {
 		left: 6px;
 		max-width: min(320px, 72vw);

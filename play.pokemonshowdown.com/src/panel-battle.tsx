@@ -174,9 +174,15 @@ export class BattleRoom extends ChatRoom {
 		animate: boolean,
 		/** |request| repeats events that |tcg| will log. Don't write them again. */
 		silent?: boolean,
+		/** Copied from history for a local replay. Do not record it again. */
+		replay?: boolean,
 		markEnded?: boolean,
 		winner?: string | null,
 	}[] = [];
+	/** Every payload this battle, so Replay can play it again. */
+	tcgHistory: BattleRoom['tcgQueue'] = [];
+	tcgPaused = false;
+	tcgHalt = 0;
 	tcgEnded = false;
 	/** Winner display name from `|win|`; `null` means tie / unknown. */
 	tcgWinner: string | null = null;
@@ -244,6 +250,8 @@ export class BattleRoom extends ChatRoom {
 		this.tcgFxSnapshot = null;
 		this.tcgEvents = [];
 		this.tcgQueue = [];
+		this.tcgHistory = [];
+		this.tcgPaused = false;
 		this.tcgPlaying = false;
 		this.tcgSyncUntil = Date.now() + 2500;
 		this.tcgLastSeq = 0;
@@ -255,6 +263,12 @@ export class BattleRoom extends ChatRoom {
 	/** Beyond this many queued payloads, the oldest are applied instantly so the board never lags minutes behind. */
 	static readonly TCG_MAX_BACKLOG = 12;
 	enqueueTcg(item: BattleRoom['tcgQueue'][number]) {
+		if (!item.replay) {
+			this.tcgHistory.push({
+				...item,
+				events: item.events?.slice(),
+			});
+		}
 		const status = item.snapshot?.status ?? this.tcgSnapshot?.status;
 		if (Date.now() < this.tcgSyncUntil && status && status !== 'setup') {
 			// Catch-up burst after rejoining a game in progress: write the log, jump the board, no beats.
@@ -278,7 +292,7 @@ export class BattleRoom extends ChatRoom {
 		this.pumpTcg();
 	}
 	pumpTcg() {
-		if (this.tcgPlaying || !this.tcgQueue.length) return;
+		if (this.tcgPaused || this.tcgPlaying || !this.tcgQueue.length) return;
 		const item = this.tcgQueue[0];
 		if (!item.animate) {
 			this.tcgQueue.shift();
@@ -340,8 +354,45 @@ export class BattleRoom extends ChatRoom {
 		const item = this.tcgQueue.shift();
 		this.tcgPlaying = false;
 		if (item) this.commitTcg(item, true);
-		this.pumpTcg();
+		if (!this.tcgPaused) this.pumpTcg();
 		return this.tcgPlaying;
+	}
+	toggleTcgPause = () => {
+		this.tcgPaused = !this.tcgPaused;
+		if (!this.tcgPaused) this.pumpTcg();
+		else this.update(null);
+	};
+	/** Jump the board to the newest snapshot. Same idea as Skip to end. */
+	skipTcgToEnd = () => {
+		this.tcgPaused = false;
+		const pending = this.tcgQueue.slice();
+		this.tcgQueue = [];
+		this.tcgPlaying = false;
+		this.tcgHalt++;
+		if (pending.length) {
+			for (const item of pending) this.commitTcg(item, false);
+		} else {
+			this.update(null);
+		}
+	};
+	/** Play the stored battle again from the first payload. */
+	replayTcg = () => {
+		if (!this.tcgHistory.length) return;
+		this.tcgPaused = false;
+		this.tcgPlaying = false;
+		this.tcgHalt++;
+		this.tcgSnapshot = null;
+		this.tcgFxSnapshot = null;
+		this.tcgEvents = [];
+		this.tcgWait = true;
+		this.tcgQueue = this.tcgHistory.map(item => ({
+			...item,
+			events: item.events?.slice(),
+			animate: !!item.events?.length && !PS.prefs.noanim,
+			silent: true,
+			replay: true,
+		}));
+		this.pumpTcg();
 	};
 
 	override destroy() {
@@ -1739,6 +1790,11 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 			fxSnapshot={room.tcgFxSnapshot}
 			events={room.tcgEvents}
 			fxKey={room.tcgFxKey}
+			halt={room.tcgHalt}
+			paused={room.tcgPaused}
+			onTogglePause={room.toggleTcgPause}
+			onReplay={room.replayTcg}
+			onSkip={room.skipTcgToEnd}
 			waiting={room.tcgWait}
 			ended={room.tcgEnded}
 			winnerName={room.tcgWinner}
