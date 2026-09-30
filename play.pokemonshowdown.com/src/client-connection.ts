@@ -454,9 +454,11 @@ export const PSLoginServer = new class {
 		// 	return Promise.resolve(null);
 		// }
 		data.act = act;
-		let url = '/~~' + PS.server.id + '/action.php';
-		if (location.pathname.endsWith('.html')) {
-			url = 'https://' + Config.routes.client + url;
+		// Same-origin proxy. /~~id/action.php is not a PHP route on this host,
+		// so a direct POST there is rejected (405).
+		let url = '/action.php?serverid=' + encodeURIComponent(PS.server.id);
+		if (Config.testclient && location.hostname !== Config.routes.client) {
+			url = 'https://play.pokemonshowdown.com/~~' + PS.server.id + '/action.php';
 			if (typeof POKEMON_SHOWDOWN_TESTCLIENT_KEY === 'string') {
 				data.sid = POKEMON_SHOWDOWN_TESTCLIENT_KEY.replace(/%2C/g, ',');
 			}
