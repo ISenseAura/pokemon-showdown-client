@@ -1753,6 +1753,9 @@ export class TcgBoard extends preact.Component<{
 	holdConsumed = false;
 	/** Last-seen board mons by iid — survives snapshot removal so KO can animate. */
 	monMemory: { [iid: string]: KoGhost } = {};
+	/** Mons removed on the latest snapshot, held until their KO (or the next unrelated beat). */
+	freshOut: { [iid: string]: true } = {};
+	lastSnap: TcgSnapshot | null = null;
 	/** Pre-draw hand per seat — snapshot already has the new hand when shuffle FX runs. */
 	handMemory: { [seat: number]: { ids: string[] | null, count: number } } = {};
 	/** Events that arrived while a beat was still playing. */
@@ -1825,7 +1828,20 @@ export class TcgBoard extends preact.Component<{
 	};
 
 	clearFx() {
+		if (this.state.fx?.kind === 'ko' && this.state.fx.iid) delete this.freshOut[this.state.fx.iid];
 		this.setState({ fx: null, pkFx: {}, koGhost: null, koHide: {}, placeIn: null });
+	}
+
+	noteRemovals(snap: TcgSnapshot) {
+		if (this.lastSnap && this.lastSnap !== snap) {
+			const prev = this.lastSnap;
+			Object.keys(this.monMemory).forEach(iid => {
+				if (findMonView(prev.players, iid) && !findMonView(snap.players, iid)) {
+					this.freshOut[iid] = true;
+				}
+			});
+		}
+		this.lastSnap = snap;
 	}
 
 	rememberMons(snap: TcgSnapshot) {
@@ -1876,6 +1892,10 @@ export class TcgBoard extends preact.Component<{
 	displayMon(seat: number, slot: TcgSlot, live: TcgPokemonView | null): TcgPokemonView | null {
 		const placed = this.state.placeIn;
 		if (placed && placed.seat === seat && sameSlot(placed.slot, slot)) return placed.mon;
+		// Keep the real card through the KO. Swapping it for a copy made it vanish and pop back.
+		if (live && this.state.koHide[live.iid]) return null;
+		if (live && placed && live.iid === placed.mon.iid) return null;
+		if (live) return live;
 		const g = this.state.koGhost;
 		if (g && g.seat === seat && sameSlot(g.slot, slot)) {
 			return {
@@ -1887,9 +1907,28 @@ export class TcgBoard extends preact.Component<{
 				maxHp: g.maxHp ?? g.hp ?? 0,
 			};
 		}
-		if (live && this.state.koHide[live.iid]) return null;
-		if (live && placed && live.iid === placed.mon.iid) return null;
-		return live;
+		const fx = this.state.fx;
+		const events = this.props.events || [];
+		let held: TcgPokemonView | null = null;
+		Object.keys(this.monMemory).forEach(iid => {
+			if (held) return;
+			const mem = this.monMemory[iid];
+			if (!mem || mem.seat !== seat || !sameSlot(mem.slot, slot)) return;
+			if (findMonView(this.props.snapshot.players, iid)) return;
+			const knocking = (fx?.kind === 'ko' && fx.iid === iid) ||
+				events.some(e => e.type === 'ko' && e.iid === iid) ||
+				!!this.freshOut[iid];
+			if (!knocking) return;
+			held = {
+				iid: mem.iid,
+				cardId: mem.cardId,
+				name: mem.name,
+				image: mem.image,
+				hp: mem.hp ?? 0,
+				maxHp: mem.maxHp ?? mem.hp ?? 0,
+			};
+		});
+		return held;
 	}
 
 	aimFlyers() {
@@ -1963,13 +2002,19 @@ export class TcgBoard extends preact.Component<{
 			let koGhost: KoGhost | null = null;
 			let placeIn: TcgBoard['state']['placeIn'] = null;
 			const koHide = { ...this.state.koHide };
+			const koStillQueued = (this.props.events || []).some(ev => ev.type === 'ko' && ev.iid && this.freshOut[ev.iid]);
+			if (!koStillQueued && fx.kind !== 'ko' && fx.kind !== 'damage' && fx.kind !== 'attack' && fx.kind !== 'ability') {
+				this.freshOut = {};
+			}
+			if (this.state.fx?.kind === 'ko' && this.state.fx.iid && fx.kind !== 'ko') {
+				delete this.freshOut[this.state.fx.iid];
+			}
 			if (fx.kind === 'ko') {
 				koGhost = e ? this.ghostForKo(fx, e) : (fx.iid ? this.monMemory[fx.iid] || null : null);
 				if (koGhost && !fx.extra) fx.extra = koGhost.name;
 				if (koGhost && (!fx.message || fx.message.includes('a Pokémon'))) {
 					fx.message = `${koGhost.name} was Knocked Out`;
 				}
-				if (fx.iid) koHide[fx.iid] = true;
 			}
 			if (fx.kind === 'place' && fx.iid) {
 				const nextPlayers = this.props.fxSnapshot?.players || this.props.snapshot.players;
@@ -2120,7 +2165,22 @@ export class TcgBoard extends preact.Component<{
 			}
 
 			show(fx, e);
-			const wait = Math.max(fx.kind === 'drawEffect' ? 3200 : fxDuration(e), BEAT_MS);
+			let wait = Math.max(fx.kind === 'drawEffect' ? 3200 : fxDuration(e), BEAT_MS);
+			// Knockout should follow the hit, not sit through a pause that lets the card vanish.
+			if (e.type === 'attack' || e.type === 'ability') {
+				let koFollows = false;
+				for (let j = i + 1; j < events.length; j++) {
+					const n = events[j];
+					if (!n) break;
+					const t = String(n.type || '');
+					if (t === 'damage' || t === 'heal' || t === 'status' || t === 'request' || t === 'act' || t === 'coin') {
+						continue;
+					}
+					koFollows = t === 'ko';
+					break;
+				}
+				if (koFollows) wait = HIT_MS + 400;
+			}
 			i++;
 			this.timer = window.setTimeout(step, wait);
 		};
@@ -2439,6 +2499,7 @@ export class TcgBoard extends preact.Component<{
 
 	override render() {
 		const snap = this.props.snapshot;
+		this.noteRemovals(snap);
 		this.rememberMons(snap);
 		this.rememberMons(this.props.fxSnapshot || snap);
 		const meIndex = snap.you != null ? snap.you : 0;
