@@ -2424,6 +2424,12 @@ export const PS = new class extends PSModel {
 		if (!this.leftPanel || !this.rightPanel || this.prefs.onepanel) {
 			return 0;
 		}
+		// TCG boards need the whole window. A chat room such as Lobby would
+		// otherwise stay open in the right panel.
+		const focused = this.panel;
+		if (focused?.type === 'battle' && (focused.id.split('-')[1] || '').startsWith('tcg')) {
+			return 0;
+		}
 
 		// The rest of this code can assume we have both a left room and a
 		// right room, and also want to show both if they fit
