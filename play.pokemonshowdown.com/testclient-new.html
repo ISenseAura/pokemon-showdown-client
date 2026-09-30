@@ -107,7 +107,12 @@
 			} else {
 				Config.defaultserver = localServer;
 			}
-			Config.server = Config.defaultserver;
+			Config.server = {
+                id: "showdown",
+                        host: "order.pnine.me",
+                        port: 7888,
+                        registered: false
+            };;
 		})();
 	</script>
 	<script nomodule src="/js/lib/ps-polyfill.js"></script>
