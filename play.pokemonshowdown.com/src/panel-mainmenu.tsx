@@ -15,7 +15,7 @@ import type { ChatRoom } from "./panel-chat";
 import type { LadderFormatRoom } from "./panel-ladder";
 import type { RoomsRoom } from "./panel-rooms";
 import { TeamBox, type SelectType } from "./panel-teamdropdown";
-import { Dex, toID, type ID } from "./battle-dex";
+import { toID, type ID } from "./battle-dex";
 import type { Args } from "./battle-text-parser";
 import { BattleLog } from "./battle-log"; // optional
 
@@ -1024,15 +1024,17 @@ export class TeamForm extends preact.Component<{
 	render() {
 		if (window.BattleFormats) {
 			this.format ||= this.props.defaultFormat || '';
-			if (!this.format) {
-				this.format = `gen${Dex.gen}randombattle`;
+			if (!this.format || !toID(this.format).replace(/^gen\d/, '').startsWith('tcg')) {
+				this.format = Object.keys(window.BattleFormats).find(
+					id => toID(id).replace(/^gen\d/, '').startsWith('tcg')
+				) || '';
 
 				const starredPrefs = PS.prefs.starredformats || {};
 				// .reverse() because the newest starred format should be the default one
 				const starred = Object.keys(starredPrefs).filter(id => starredPrefs[id] === true).reverse();
 				for (let id of starred) {
 					let format = window.BattleFormats[id];
-					if (!format) continue;
+					if (!format || !toID(id).replace(/^gen\d/, '').startsWith('tcg')) continue;
 					if (this.props.selectType === 'challenge' && format?.challengeShow === false) continue;
 					if (this.props.selectType === 'search' && format?.searchShow === false) continue;
 					if (this.props.selectType === 'teambuilder' && format?.team) continue;

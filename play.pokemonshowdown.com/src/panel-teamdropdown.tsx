@@ -408,11 +408,6 @@ class FormatDropdownPanel extends PSRoomPanel {
 		this.search = (ev.currentTarget as HTMLInputElement).value;
 		this.forceUpdate();
 	};
-	toggleGen = (ev: Event) => {
-		const target = ev.currentTarget as HTMLButtonElement;
-		this.gen = this.gen === target.value ? '' as ID : target.value as ID;
-		this.forceUpdate();
-	};
 	override render() {
 		const room = this.props.room;
 		if (!room.parentElem) {
@@ -437,21 +432,11 @@ class FormatDropdownPanel extends PSRoomPanel {
 				break;
 			}
 		}
-		const curGen = (gen: string) => this.gen === gen ? ' cur' : '';
 		const searchBar = <div style="margin-bottom: 0.5em">
 			<input
 				type="search" name="search" placeholder="Search formats" class="textbox autofocus" autocomplete="off"
 				onInput={this.updateSearch} onChange={this.updateSearch}
-			/> {}
-			<button onClick={this.toggleGen} value="gen9" class={`button button-first${curGen('gen9')}`}>Gen 9</button>
-			<button onClick={this.toggleGen} value="gen8" class={`button button-middle${curGen('gen8')}`}>8</button>
-			<button onClick={this.toggleGen} value="gen7" class={`button button-middle${curGen('gen7')}`}>7</button>
-			<button onClick={this.toggleGen} value="gen6" class={`button button-middle${curGen('gen6')}`}>6</button>
-			<button onClick={this.toggleGen} value="gen5" class={`button button-middle${curGen('gen5')}`}>5</button>
-			<button onClick={this.toggleGen} value="gen4" class={`button button-middle${curGen('gen4')}`}>4</button>
-			<button onClick={this.toggleGen} value="gen3" class={`button button-middle${curGen('gen3')}`}>3</button>
-			<button onClick={this.toggleGen} value="gen2" class={`button button-middle${curGen('gen2')}`}>2</button>
-			<button onClick={this.toggleGen} value="gen1" class={`button button-last${curGen('gen1')}`}>1</button>
+			/>
 		</div>;
 		if (!formatsLoaded) {
 			return <PSPanelWrapper room={room}><div class="pad">
@@ -470,6 +455,7 @@ class FormatDropdownPanel extends PSRoomPanel {
 		);
 		const curFormat = toID((room.parentElem as HTMLButtonElement).value);
 		const formats = Object.values(BattleFormats).filter(format => {
+			if (!toID(format.id).replace(/^gen\d/, '').startsWith('tcg')) return false;
 			if (selectType === 'challenge' && format.challengeShow === false) return false;
 			if (selectType === 'search' && format.searchShow === false) return false;
 			if (selectType === 'tournament' && format.tournamentShow === false) return false;
@@ -534,7 +520,7 @@ class FormatDropdownPanel extends PSRoomPanel {
 								searchShow: false,
 							} as any;
 						}
-						if (!format) return null;
+						if (!format || !toID(format.id).replace(/^gen\d/, '').startsWith('tcg')) return null;
 						if (i === starred.length - 1) starredDone = true;
 						if (selectType === 'challenge' && format.challengeShow === false) return null;
 						if (selectType === 'search' && format.searchShow === false) return null;
