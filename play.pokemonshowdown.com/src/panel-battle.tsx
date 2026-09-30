@@ -158,10 +158,25 @@ export class BattleRoom extends ChatRoom {
 	overlayActive: 'move' | 'switch' | null = null;
 	tcgMode = isTcgBattleId(this.id);
 	tcgSnapshot: TcgSnapshot | null = null;
+	/** Snapshot for the beat currently animating. The board keeps the previous one until that beat ends. */
+	tcgFxSnapshot: TcgSnapshot | null = null;
 	tcgEvents: TcgEvent[] = [];
 	tcgFxKey = 0;
 	tcgLastSeq = 0;
 	tcgWait = false;
+	tcgPlaying = false;
+	/** Payloads that arrive during (re)join are history; show the result instead of replaying every beat. */
+	tcgSyncUntil = Date.now() + 2500;
+	tcgQueue: {
+		snapshot?: TcgSnapshot,
+		events?: TcgEvent[],
+		wait?: boolean,
+		animate: boolean,
+		/** |request| repeats events that |tcg| will log. Don't write them again. */
+		silent?: boolean,
+		markEnded?: boolean,
+		winner?: string | null,
+	}[] = [];
 	tcgEnded = false;
 	/** Winner display name from `|win|`; `null` means tie / unknown. */
 	tcgWinner: string | null = null;
@@ -226,13 +241,108 @@ export class BattleRoom extends ChatRoom {
 		this.request = null;
 		this.choices = null;
 		this.tcgSnapshot = null;
+		this.tcgFxSnapshot = null;
 		this.tcgEvents = [];
+		this.tcgQueue = [];
+		this.tcgPlaying = false;
+		this.tcgSyncUntil = Date.now() + 2500;
 		this.tcgLastSeq = 0;
 		this.tcgEnded = false;
 		this.tcgWinner = null;
 		this.updateChoiceNotification();
 		return false;
 	}
+	/** Beyond this many queued payloads, the oldest are applied instantly so the board never lags minutes behind. */
+	static readonly TCG_MAX_BACKLOG = 12;
+	enqueueTcg(item: BattleRoom['tcgQueue'][number]) {
+		const status = item.snapshot?.status ?? this.tcgSnapshot?.status;
+		if (Date.now() < this.tcgSyncUntil && status && status !== 'setup') {
+			// Catch-up burst after rejoining a game in progress: write the log, jump the board, no beats.
+			// A fresh game is still in setup here, so its opening beats keep animating.
+			item.animate = false;
+			if (this.tcgPlaying) this.tcgQueue.push(item);
+			else this.commitTcg(item, false);
+			return;
+		}
+		// A request must not paint the resulting board while an earlier beat is still playing.
+		if (!item.animate && !this.tcgPlaying && !this.tcgQueue.length) {
+			this.commitTcg(item, false);
+			return;
+		}
+		this.tcgQueue.push(item);
+		while (this.tcgQueue.length > BattleRoom.TCG_MAX_BACKLOG) {
+			const old = this.tcgQueue.shift()!;
+			this.commitTcg(old, false);
+		}
+		this.tcgWait = true;
+		this.pumpTcg();
+	}
+	pumpTcg() {
+		if (this.tcgPlaying || !this.tcgQueue.length) return;
+		const item = this.tcgQueue[0];
+		if (!item.animate) {
+			this.tcgQueue.shift();
+			this.commitTcg(item, false);
+			this.pumpTcg();
+			return;
+		}
+		this.tcgPlaying = true;
+		this.tcgFxSnapshot = item.snapshot || null;
+		if (!this.tcgSnapshot && item.snapshot) this.tcgSnapshot = item.snapshot;
+		this.tcgEvents = item.events || [];
+		this.tcgFxKey++;
+		this.tcgWait = true;
+		this.update(null);
+	}
+	/** Apply the board for one payload. Logs were already written beat-by-beat when `paced` is set. */
+	commitTcg(item: BattleRoom['tcgQueue'][number], paced: boolean) {
+		if (item.snapshot) {
+			this.tcgSnapshot = item.snapshot;
+			if (item.snapshot.status === 'over') {
+				this.tcgEnded = true;
+				if (this.tcgWinner == null && item.snapshot.winner != null) {
+					this.tcgWinner = item.snapshot.players?.[item.snapshot.winner]?.name || null;
+				}
+			}
+		}
+		if (item.markEnded) this.tcgEnded = true;
+		if (item.winner !== undefined) this.tcgWinner = item.winner;
+		if (item.wait != null) this.tcgWait = item.wait;
+		else if (item.snapshot) this.tcgWait = !item.snapshot.actions?.length;
+		if (!paced && !item.silent && item.events?.length) {
+			for (const ev of item.events) this.revealTcgEvent(ev);
+		}
+		this.tcgFxSnapshot = null;
+		this.updateChoiceNotification();
+		this.update(null);
+	}
+	revealTcgEvent(ev: TcgEvent) {
+		if (typeof ev.seq === 'number' && ev.seq <= this.tcgLastSeq) return;
+		if (typeof ev.seq === 'number') this.tcgLastSeq = Math.max(this.tcgLastSeq, ev.seq);
+		const players = this.tcgFxSnapshot?.players || this.tcgSnapshot?.players;
+		const entry = chatEntryForEvent(ev, players);
+		if (!entry) return;
+		if (ev.type === 'turn') {
+			const esc = (s: string) => String(s || '')
+				.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+			this.log?.add(['html',
+				`<h2 class="battle-history tcg-turn-head">Turn ${Number(ev.number) || '?'} — ${esc(entry.text)}</h2>`]);
+			return;
+		}
+		this.log?.add(['html', chatHtmlForEntry(entry)]);
+	}
+	onTcgEvent = (ev: TcgEvent) => {
+		this.revealTcgEvent(ev);
+		this.update(null);
+	};
+	/** @returns whether another beat started */
+	onTcgFxDone = () => {
+		const item = this.tcgQueue.shift();
+		this.tcgPlaying = false;
+		if (item) this.commitTcg(item, true);
+		this.pumpTcg();
+		return this.tcgPlaying;
+	};
 
 	override destroy() {
 		this.request = null;
@@ -599,29 +709,19 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 			return;
 		}
 		case 'win': case 'tie': {
-			room.tcgEnded = true;
-			room.tcgWait = true;
 			const winnerName = args[0] === 'win' ? (args[1] || '').trim() : '';
-			room.tcgWinner = args[0] === 'tie' ? null : (winnerName || null);
-			const esc = (s: string) => String(s || '')
-				.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-			const text = args[0] === 'tie' || !winnerName ?
-				'The battle ended in a tie.' :
-				`${winnerName} won the battle!`;
-			room.log?.add(['html',
-				`<div class="chat tcg-log-line k-win">` +
-				`<span class="tcg-log-tag">${args[0] === 'tie' ? 'Tie' : 'Win'}</span>` +
-				`<span class="tcg-log-text">${esc(text)}</span></div>`]);
-			room.tcgEvents = [{
-				seq: ++room.tcgLastSeq,
-				type: 'over',
-				reason: args[0] === 'tie' || !winnerName ? 'Draw' : `${winnerName} won`,
-				winnerName: winnerName || undefined,
-				tie: args[0] === 'tie' || !winnerName,
-			}];
-			room.tcgFxKey++;
-			room.updateChoiceNotification();
-			room.update(null);
+			room.enqueueTcg({
+				animate: !PS.prefs.noanim,
+				markEnded: true,
+				winner: args[0] === 'tie' ? null : (winnerName || null),
+				events: [{
+					seq: room.tcgLastSeq + 1,
+					type: 'over',
+					reason: args[0] === 'tie' || !winnerName ? 'Draw' : `${winnerName} won`,
+					winnerName: winnerName || undefined,
+					tie: args[0] === 'tie' || !winnerName,
+				}],
+			});
 			return;
 		}
 		case 'html': case 'raw': case 'c': case 'c:': case 'chat': case 'chatmsg':
@@ -653,44 +753,21 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		if (data.kind === 'watch' && room.tcgSnapshot?.you != null) {
 			return;
 		}
-		if (data.snapshot) {
-			room.tcgSnapshot = data.snapshot;
-			if (data.snapshot.status === 'over') {
-				room.tcgEnded = true;
-				if (room.tcgWinner == null && data.snapshot.winner != null) {
-					room.tcgWinner = data.snapshot.players?.[data.snapshot.winner]?.name || null;
-				}
-			}
+		const wait = data.wait != null ? data.wait : (data.snapshot ? !data.snapshot.actions?.length : undefined);
+		const ended = data.snapshot?.status === 'over';
+		let winner: string | null | undefined;
+		if (ended && data.snapshot?.winner != null) {
+			winner = data.snapshot.players?.[data.snapshot.winner]?.name || null;
 		}
-		if (data.wait != null) room.tcgWait = data.wait;
-		else if (data.snapshot) room.tcgWait = !data.snapshot.actions?.length;
-		if (data.events?.length && !skipFx) {
-			room.tcgEvents = data.events;
-			room.tcgFxKey++;
-			const players = data.snapshot?.players || room.tcgSnapshot?.players;
-			for (const ev of data.events) {
-				if (typeof ev.seq === 'number' && ev.seq <= room.tcgLastSeq) continue;
-				if (typeof ev.seq === 'number') room.tcgLastSeq = Math.max(room.tcgLastSeq, ev.seq);
-				const entry = chatEntryForEvent(ev, players);
-				if (!entry) continue;
-				if (ev.type === 'turn') {
-					const esc = (s: string) => String(s || '')
-						.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-					room.log?.add(['html',
-						`<h2 class="battle-history tcg-turn-head">Turn ${Number(ev.number) || '?'} — ${esc(entry.text)}</h2>`]);
-					continue;
-				}
-				room.log?.add(['html', chatHtmlForEntry(entry)]);
-			}
-		} else if (typeof data.seq === 'number') {
-			// |request| often arrives with the same events before |tcg|. Don't advance
-			// lastSeq there or the following |tcg| will skip every chat line.
-			if (!(skipFx && data.events?.length)) {
-				room.tcgLastSeq = Math.max(room.tcgLastSeq, data.seq);
-			}
-		}
-		room.updateChoiceNotification();
-		room.update(null);
+		room.enqueueTcg({
+			snapshot: data.snapshot,
+			events: data.events,
+			wait,
+			animate: !skipFx && !!data.events?.length && !PS.prefs.noanim,
+			silent: skipFx,
+			markEnded: ended || undefined,
+			winner,
+		});
 	}
 	sendTcgAction = (action: TcgAction) => {
 		const room = this.props.room;
@@ -1659,12 +1736,15 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 			Math.max(battleWidth, room.width - chatWidth);
 		const board = room.tcgSnapshot ? <TcgBoard
 			snapshot={room.tcgSnapshot}
+			fxSnapshot={room.tcgFxSnapshot}
 			events={room.tcgEvents}
 			fxKey={room.tcgFxKey}
 			waiting={room.tcgWait}
 			ended={room.tcgEnded}
 			winnerName={room.tcgWinner}
 			onAct={this.sendTcgAction}
+			onEvent={room.onTcgEvent}
+			onFxDone={room.onTcgFxDone}
 		/> : <div class="tcg-table"><p class="tcg-waiting">Shuffling…</p></div>;
 
 		// Phone / narrow: board fills the room; toggle to chat (same idea as gen battles)

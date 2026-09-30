@@ -277,7 +277,10 @@ export class PSStorage {
 			if (this.loaded === true) return;
 			return this.loaded;
 		}
-		if (Config.testclient) {
+		if (Config.testclient || location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+			// Local pages are not the production client host, so crossdomain.php
+			// will never answer. Connect to the server in config.js instead.
+			Config.server ||= Config.defaultserver;
 			return;
 		} else if (`${location.protocol}//${location.hostname}` === PSStorage.origin) {
 			// Same origin, everything can be kept as default

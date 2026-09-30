@@ -76,7 +76,7 @@ type Preview = { cardId: string, image?: string, name?: string };
 /** One replay-player FX beat (Unreal-Bot graphics.js fxFor + hits). */
 type FxHit = {
 	iid: string, amount?: number, kind: 'damage' | 'heal' | 'status',
-	src?: string, label?: string,
+	src?: string, label?: string, element?: string,
 };
 type FxBeat = {
 	kind: string,
@@ -98,8 +98,9 @@ type FxBeat = {
 	labels?: string[],
 	hits?: FxHit[],
 	tie?: boolean,
+	element?: string,
 };
-type PkFx = { cls: string, dataFx?: string, tick?: number };
+type PkFx = { cls: string, dataFx?: string, tick?: number, element?: string };
 type KoGhost = {
 	iid: string,
 	cardId: string,
@@ -166,18 +167,41 @@ function afterKind(events: TcgEvent[], i: number, kind: string): boolean {
 	}
 	return false;
 }
-function attackHits(events: TcgEvent[], i: number): FxHit[] {
+/** Pocket energy names. "electric" and "steel" are accepted as aliases. */
+function energyElement(raw?: string): string {
+	const t = String(raw || '').toLowerCase();
+	if (t === 'electric' || t === 'lightning') return 'lightning';
+	if (t === 'steel' || t === 'metal') return 'metal';
+	if (t === 'dark' || t === 'darkness') return 'darkness';
+	if (t === 'normal' || t === 'colorless') return 'colorless';
+	if ([
+		'grass', 'fire', 'water', 'psychic', 'fighting', 'fairy', 'dragon',
+	].includes(t)) return t;
+	return '';
+}
+function attackElement(e: TcgEvent, players?: TcgPlayerView[]): string {
+	const fromEvent = energyElement(e.element || e.energyType || e.attackType || e.dmgType);
+	if (fromEvent) return fromEvent;
+	const mon = findMonView(players, e.iid);
+	const fromMon = energyElement(mon?.types?.[0]);
+	if (fromMon) return fromMon;
+	const named = mon?.attacks?.find(a => a.name && e.name && a.name === e.name);
+	const paid = named?.cost?.map(energyElement).find(c => c && c !== 'colorless');
+	return paid || 'colorless';
+}
+function attackHits(events: TcgEvent[], i: number, players?: TcgPlayerView[]): FxHit[] {
 	const start = events[i];
 	if (!start || (start.type !== 'attack' && start.type !== 'ability')) return [];
 	const src = start.type === 'ability' ? 'ability' : 'attack';
 	const label = start.name || (src === 'ability' ? 'Ability' : 'Attack');
+	const element = src === 'attack' ? attackElement(start, players) : '';
 	const hits: FxHit[] = [];
 	for (let j = i + 1; j < events.length; j++) {
 		const n = events[j];
 		if (!n) break;
 		const t = String(n.type || '');
 		if (t === 'request' || t === 'act' || t === 'coin') continue;
-		if (t === 'damage') hits.push({ iid: n.iid, amount: n.amount, kind: 'damage', src, label });
+		if (t === 'damage') hits.push({ iid: n.iid, amount: n.amount, kind: 'damage', src, label, element });
 		else if (t === 'heal') hits.push({ iid: n.iid, amount: n.amount, kind: 'heal' });
 		else if (t === 'status') hits.push({ iid: n.iid, kind: 'status' });
 		else break;
@@ -743,9 +767,9 @@ function pkClass(kind: string): string {
 
 function buildPkFx(fx: FxBeat, tick = 0): { [iid: string]: PkFx } {
 	const out: { [iid: string]: PkFx } = {};
-	const put = (iid: string | undefined, cls: string, dataFx?: string) => {
+	const put = (iid: string | undefined, cls: string, dataFx?: string, element?: string) => {
 		if (!iid) return;
-		out[iid] = { cls, dataFx, tick };
+		out[iid] = { cls, dataFx, tick, element };
 	};
 	if (fx.iid) {
 		let dataFx = '';
@@ -763,9 +787,18 @@ function buildPkFx(fx: FxBeat, tick = 0): { [iid: string]: PkFx } {
 			h.kind === 'heal' && h.amount ? `+${h.amount}` : undefined;
 		const src = h.src || fx.src;
 		const cls = `${h.kind === 'heal' ? 'fx-heal' : h.kind === 'status' ? 'fx-status' : 'fx-hit'}${src ? ` src-${src}` : ''}`;
-		put(h.iid, cls, dataFx);
+		put(h.iid, cls, dataFx, h.kind === 'damage' ? (h.element || fx.element) : undefined);
 	}
 	return out;
+}
+
+function TypeHit(props: { type: string, tick?: number }) {
+	// data-tick changes per hit so the CSS animation restarts via TcgMon's reflow.
+	return <div class={`type-hit t-${props.type}`} data-tick={props.tick ?? 0} aria-hidden="true">
+		<i class="core"></i>
+		<i class="p p1"></i><i class="p p2"></i><i class="p p3"></i>
+		<i class="p p4"></i><i class="p p5"></i><i class="p p6"></i>
+	</div>;
 }
 
 function FxCaption(props: { tag: string, title?: string }) {
@@ -1363,13 +1396,55 @@ class TcgCardFace extends preact.Component<{
 	onClick?: () => void,
 	onInspect?: (p: Preview) => void,
 	onPointerDown?: (e: PointerEvent) => void,
+	/** Long-press opened the preview; cancel a play that pointer-up would send. */
+	onHold?: () => void,
 }> {
-	inspect = (ev: MouseEvent) => {
+	holdTimer: number | null = null;
+	held = false;
+	holdX = 0;
+	holdY = 0;
+	clearHold() {
+		if (this.holdTimer != null) window.clearTimeout(this.holdTimer);
+		this.holdTimer = null;
+	}
+	inspect = (ev?: Event) => {
 		const { cardId, image, name, back, onInspect } = this.props;
 		if (back || !cardId || !onInspect) return;
-		ev.preventDefault();
-		ev.stopPropagation();
+		ev?.preventDefault();
+		ev?.stopPropagation();
 		onInspect({ cardId, image, name });
+	};
+	onPointerDown = (ev: PointerEvent) => {
+		if (ev.button != null && ev.button !== 0) return;
+		ev.stopPropagation();
+		this.held = false;
+		this.holdX = ev.clientX;
+		this.holdY = ev.clientY;
+		this.props.onPointerDown?.(ev);
+		if (!this.props.onInspect || this.props.back || !this.props.cardId) return;
+		this.clearHold();
+		this.holdTimer = window.setTimeout(() => {
+			this.holdTimer = null;
+			this.held = true;
+			this.props.onHold?.();
+			this.inspect();
+		}, 420);
+	};
+	onPointerUp = () => {
+		this.clearHold();
+	};
+	onPointerMove = (ev: PointerEvent) => {
+		if (this.holdTimer == null) return;
+		if (Math.hypot(ev.clientX - this.holdX, ev.clientY - this.holdY) > 8) this.clearHold();
+	};
+	onClick = (ev: MouseEvent) => {
+		ev.stopPropagation();
+		if (this.held) {
+			this.held = false;
+			ev.preventDefault();
+			return;
+		}
+		this.props.onClick?.();
 	};
 	onImgError = (ev: Event) => {
 		const img = ev.currentTarget as HTMLImageElement | null;
@@ -1413,14 +1488,14 @@ class TcgCardFace extends preact.Component<{
 	override render() {
 		const {
 			cardId, image, name, size, selected, back, playable, fanIndex, fanCount, dragging,
-			pocket, onClick, onPointerDown, onInspect,
+			pocket, onInspect,
 		} = this.props;
 		const src = image || (cardId ? cardArt(cardId, pocket ? { pocket: true } : undefined) : '');
 		const cls = [
 			'tcg-card', `tcg-card-${size || 'md'}`,
 			selected ? 'tcg-card-selected' : '',
 			back ? 'tcg-card-back' : '',
-			onClick || onPointerDown ? 'tcg-card-click' : '',
+			this.props.onClick || this.props.onPointerDown || onInspect ? 'tcg-card-click' : '',
 			playable ? 'tcg-card-playable' : '',
 			dragging ? 'tcg-card-dragging' : '',
 			fanCount ? 'tcg-card-fan' : '',
@@ -1432,9 +1507,12 @@ class TcgCardFace extends preact.Component<{
 		} as any : undefined;
 		return <button
 			type="button" class={cls} style={style}
-			onClick={onClick ? ev => { ev.stopPropagation(); onClick(); } : undefined}
-			onPointerDown={onPointerDown ? ev => { ev.stopPropagation(); onPointerDown(ev as any); } : undefined}
-			onContextMenu={onInspect ? this.inspect : undefined}
+			onClick={onInspect || this.props.onClick ? this.onClick : undefined}
+			onPointerDown={onInspect || this.props.onPointerDown ? this.onPointerDown : undefined}
+			onPointerUp={this.onPointerUp}
+			onPointerCancel={this.onPointerUp}
+			onPointerMove={this.onPointerMove}
+			onContextMenu={onInspect ? this.inspect : ev => ev.preventDefault()}
 			title={name || cardId || ''} aria-pressed={selected}
 		>
 			<span class="tcg-card-inner">
@@ -1453,6 +1531,36 @@ class TcgMon extends preact.Component<{
 	onClick?: () => void, onInspect?: (p: Preview) => void,
 }> {
 	baseEl: HTMLElement | null = null;
+	holdTimer: number | null = null;
+	held = false;
+	clearHold() {
+		if (this.holdTimer != null) window.clearTimeout(this.holdTimer);
+		this.holdTimer = null;
+	}
+	onPointerDown = (ev: PointerEvent) => {
+		const mon = this.props.mon;
+		if (!mon || !this.props.onInspect) return;
+		if (ev.button != null && ev.button !== 0) return;
+		this.held = false;
+		this.clearHold();
+		this.holdTimer = window.setTimeout(() => {
+			this.holdTimer = null;
+			this.held = true;
+			this.props.onInspect?.({ cardId: mon.cardId, image: mon.image, name: mon.name });
+		}, 420);
+	};
+	onPointerUp = () => {
+		this.clearHold();
+	};
+	onClick = (ev: MouseEvent) => {
+		if (this.held) {
+			this.held = false;
+			ev.preventDefault();
+			ev.stopPropagation();
+			return;
+		}
+		this.props.onClick?.();
+	};
 
 	override componentDidUpdate(prev: this['props']) {
 		const cur = this.props.pkFx;
@@ -1499,16 +1607,22 @@ class TcgMon extends preact.Component<{
 		].filter(Boolean).join(' ');
 		return <div
 			ref={el => { this.baseEl = el as HTMLElement | null; }}
-			class={cls} onClick={onClick} data-iid={mon.iid}
+			class={cls}
+			onClick={this.onClick}
+			onPointerDown={this.onPointerDown}
+			onPointerUp={this.onPointerUp}
+			onPointerCancel={this.onPointerUp}
+			onContextMenu={ev => {
+				ev.preventDefault();
+				if (mon) this.props.onInspect?.({ cardId: mon.cardId, image: mon.image, name: mon.name });
+			}}
+			data-iid={mon.iid}
 			data-fx={pkFx?.dataFx || undefined}
 			data-fx-tick={pkFx?.tick != null ? String(pkFx.tick) : undefined}
+			data-el={pkFx?.element || undefined}
 			data-drop-slot={String(this.props.slot)}
 			data-drop-foe={foe ? '1' : '0'}
 			data-drop-empty="0"
-			onContextMenu={onInspect && mon ? (ev: any) => {
-				ev.preventDefault();
-				onInspect({ cardId: mon.cardId, image: mon.image, name: mon.name });
-			} : undefined}
 		>
 			<TcgCardFace
 				cardId={mon.cardId} image={mon.image} name={mon.name} size={cardSize}
@@ -1525,6 +1639,7 @@ class TcgMon extends preact.Component<{
 			</div>
 			{(mon.status || mon.poisoned || mon.burned) &&
 				<div class="tcg-status">{mon.status}{mon.poisoned ? ' PSN' : ''}{mon.burned ? ' BRN' : ''}</div>}
+			{pkFx?.element && <TypeHit type={pkFx.element} tick={pkFx.tick} />}
 			{dropHot && dropLabel && <em class="tcg-drop-tag">{dropLabel}</em>}
 		</div>;
 	}
@@ -1582,11 +1697,16 @@ export class TcgBoard extends preact.Component<{
 	snapshot: TcgSnapshot,
 	events: TcgEvent[],
 	fxKey: number,
+	/** Board after this beat. Display keeps `snapshot` until the beat finishes. */
+	fxSnapshot?: TcgSnapshot | null,
 	waiting: boolean,
 	ended?: boolean,
 	/** Winner display name; `null`/empty with ended = tie or unknown. */
 	winnerName?: string | null,
 	onAct: (action: TcgAction) => void,
+	/** Fired when a beat starts, including events that share that beat. */
+	onEvent?: (ev: TcgEvent) => void,
+	onFxDone?: () => boolean,
 }> {
 	override state = {
 		selectedHand: null as number | null,
@@ -1604,6 +1724,8 @@ export class TcgBoard extends preact.Component<{
 	timer: number | null = null;
 	tableEl: HTMLElement | null = null;
 	dragMoved = false;
+	/** Set when a long-press opened the preview, so pointer-up does not play the card. */
+	holdConsumed = false;
 	/** Last-seen board mons by iid — survives snapshot removal so KO can animate. */
 	monMemory: { [iid: string]: KoGhost } = {};
 	/** Pre-draw hand per seat — snapshot already has the new hand when shuffle FX runs. */
@@ -1623,7 +1745,7 @@ export class TcgBoard extends preact.Component<{
 	/** Cards that appeared in hand since the last stash (for draw FX when event.ids missing). */
 	inferDrawnIds(seat: number, n: number): string[] | null {
 		const prev = this.handMemory[seat]?.ids;
-		const curr = handIds(this.props.snapshot.players[seat]?.hand);
+		const curr = handIds((this.props.fxSnapshot || this.props.snapshot).players[seat]?.hand);
 		if (!curr?.length) return null;
 		if (!prev?.length) return curr.slice(Math.max(0, curr.length - n));
 		const left = curr.slice();
@@ -1645,7 +1767,7 @@ export class TcgBoard extends preact.Component<{
 	}
 	override componentDidUpdate(prev: this['props'], prevState: this['state']) {
 		if (this.props.fxKey !== prev.fxKey) {
-			this.stashHands(prev.snapshot);
+			this.stashHands(prev.fxSnapshot || prev.snapshot);
 			this.playFx(this.props.events);
 		} else if (this.state.fx !== prevState.fx) {
 			requestAnimationFrame(() => this.aimFlyers());
@@ -1785,13 +1907,15 @@ export class TcgBoard extends preact.Component<{
 			return;
 		}
 		this.fxBusy = false;
-		this.clearFx();
+		const more = this.props.onFxDone?.() ?? false;
+		if (!more) this.clearFx();
 	}
 
 	runFx(events: TcgEvent[]) {
 		if (this.timer != null) window.clearTimeout(this.timer);
-		const players = this.props.snapshot.players;
-		const you = this.props.snapshot.you;
+		const shown = this.props.fxSnapshot || this.props.snapshot;
+		const players = shown.players;
+		const you = shown.you;
 		let i = 0;
 		let fxTick = 0;
 		const HIT_MS = 1600;
@@ -1812,12 +1936,16 @@ export class TcgBoard extends preact.Component<{
 		};
 
 		const step = () => {
-			while (i < events.length && skipEvent(events, i)) i++;
+			while (i < events.length && skipEvent(events, i)) {
+				this.props.onEvent?.(events[i]);
+				i++;
+			}
 			if (i >= events.length) {
 				this.finishFx();
 				return;
 			}
 			const e = events[i];
+			this.props.onEvent?.(e);
 			let fx = fxFor(e, events, i, players, you);
 
 			// Prefer private draw ids from the event; otherwise infer from hand delta for your seat.
@@ -1859,7 +1987,7 @@ export class TcgBoard extends preact.Component<{
 			}
 
 			if (e.type === 'attack' || e.type === 'ability') {
-				const hits = attackHits(events, i);
+				const hits = attackHits(events, i, players);
 				if (!fx.extra) fx.extra = e.name || (e.type === 'ability' ? 'Ability' : 'Attack');
 				if (!fx.message) fx.message = `${monName(players, e.iid)} used ${fx.extra}`;
 
@@ -1920,6 +2048,7 @@ export class TcgBoard extends preact.Component<{
 							amount: h.amount,
 							src: h.src || (e.type === 'ability' ? 'ability' : 'attack'),
 							extra: h.label || fx.extra,
+							element: h.element,
 							hits: [h],
 						};
 						show(hitFx);
@@ -1943,6 +2072,12 @@ export class TcgBoard extends preact.Component<{
 
 	openInspect = (inspect: Preview) => {
 		this.setState({ inspect });
+	};
+	/** Finger stayed down long enough to preview; drop the in-progress drag so it is not a play. */
+	onCardHold = () => {
+		this.holdConsumed = true;
+		this.dragMoved = true;
+		if (this.state.drag) this.setState({ drag: null });
 	};
 	closeInspect = () => {
 		if (this.state.inspect) this.setState({ inspect: null });
@@ -1970,6 +2105,7 @@ export class TcgBoard extends preact.Component<{
 		}
 		e.preventDefault();
 		this.dragMoved = false;
+		this.holdConsumed = false;
 		this.setState({
 			selectedHand: null,
 			energyPick: false,
@@ -2034,7 +2170,10 @@ export class TcgBoard extends preact.Component<{
 		const dx = e.clientX - drag.originX;
 		const dy = e.clientY - drag.originY;
 		const active = drag.active || Math.hypot(dx, dy) > 8;
-		if (active) this.dragMoved = true;
+		if (active) {
+			this.dragMoved = true;
+			this.holdConsumed = false;
+		}
 		const over = active ? this.hitDrop(e.clientX, e.clientY) : null;
 		let hint = drag.hint;
 		if (active && over) {
@@ -2055,6 +2194,11 @@ export class TcgBoard extends preact.Component<{
 
 	onDragEnd = (e: PointerEvent) => {
 		const drag = this.state.drag;
+		if (this.holdConsumed) {
+			this.holdConsumed = false;
+			if (drag) this.setState({ drag: null });
+			return;
+		}
 		if (!drag) return;
 		const over = drag.active ? this.hitDrop(e.clientX, e.clientY) : null;
 		const hits = over ? actionsForDrop(this.acts(), drag, over) : [];
@@ -2360,7 +2504,11 @@ export class TcgBoard extends preact.Component<{
 		const canAttach = allActs.some(a => a.type === 'attachZone');
 		const zone = me.energyZone;
 
-		return <div class={tableClass} ref={el => { this.tableEl = el as HTMLElement | null; }}>
+		return <div
+			class={tableClass}
+			ref={el => { this.tableEl = el as HTMLElement | null; }}
+			onContextMenu={ev => ev.preventDefault()}
+		>
 			<div class="tcg-felt"></div>
 			{waitingOpp && !(st.fx && (st.fx.kind === 'turn' || st.fx.kind === 'search' || st.fx.kind === 'mulligan')) &&
 				<div class="tcg-wait-banner" aria-live="polite">
@@ -2377,7 +2525,7 @@ export class TcgBoard extends preact.Component<{
 				<div class="tcg-inspect-card" onClick={ev => ev.stopPropagation()}>
 					{inspectSrc ? <img src={inspectSrc} alt={inspect.name || inspect.cardId} /> : null}
 					<button type="button" class="tcg-inspect-close" onClick={this.closeInspect}>Close</button>
-					<p class="tcg-inspect-hint">Right-click any card to inspect · Esc / click outside to close</p>
+					<p class="tcg-inspect-hint">Hold a card to preview · tap outside to close</p>
 				</div>
 			</div>}
 
@@ -2609,6 +2757,7 @@ export class TcgBoard extends preact.Component<{
 						dragging={drag?.source === 'hand' && drag.hand === i && dragging}
 						fanIndex={i} fanCount={myHand.length}
 						onPointerDown={playable ? (ev: any) => this.startHandDrag(i, id, ev) : undefined}
+						onHold={this.onCardHold}
 						onInspect={this.openInspect}
 					/>;
 				}) : Array.from({ length: pileCount(me.hand) }, (_, i) =>
