@@ -1608,6 +1608,9 @@ export class TcgBoard extends preact.Component<{
 	monMemory: { [iid: string]: KoGhost } = {};
 	/** Pre-draw hand per seat — snapshot already has the new hand when shuffle FX runs. */
 	handMemory: { [seat: number]: { ids: string[] | null, count: number } } = {};
+	/** Events that arrived while a beat was still playing. */
+	fxPending: TcgEvent[] = [];
+	fxBusy = false;
 
 	stashHands(snap: TcgSnapshot | null | undefined) {
 		if (!snap?.players) return;
@@ -1654,6 +1657,8 @@ export class TcgBoard extends preact.Component<{
 		}
 	}
 	override componentWillUnmount() {
+		this.fxPending = [];
+		this.fxBusy = false;
 		if (this.timer != null) window.clearTimeout(this.timer);
 		window.removeEventListener('pointermove', this.onDragMove);
 		window.removeEventListener('pointerup', this.onDragEnd);
@@ -1758,17 +1763,40 @@ export class TcgBoard extends preact.Component<{
 	}
 
 	playFx(events: TcgEvent[]) {
-		if (this.timer != null) window.clearTimeout(this.timer);
 		if (!events?.length || PS.prefs.noanim) {
-			this.clearFx();
+			if (!this.fxBusy) this.clearFx();
 			return;
 		}
+		// A fast CPU can deliver the next action before this one finishes.
+		// Keep playing the current beat, then the new events, each for a fixed time.
+		if (this.fxBusy) {
+			this.fxPending.push(...events);
+			return;
+		}
+		this.fxBusy = true;
+		this.runFx(events);
+	}
+
+	finishFx() {
+		if (this.fxPending.length) {
+			const next = this.fxPending;
+			this.fxPending = [];
+			this.runFx(next);
+			return;
+		}
+		this.fxBusy = false;
+		this.clearFx();
+	}
+
+	runFx(events: TcgEvent[]) {
+		if (this.timer != null) window.clearTimeout(this.timer);
 		const players = this.props.snapshot.players;
 		const you = this.props.snapshot.you;
 		let i = 0;
 		let fxTick = 0;
-		const HIT_MS = 1000;
-		const WINDUP_MS = 800;
+		const HIT_MS = 1600;
+		const WINDUP_MS = 1200;
+		const BEAT_MS = 1600;
 
 		const show = (fx: FxBeat, e?: TcgEvent) => {
 			fxTick++;
@@ -1786,7 +1814,7 @@ export class TcgBoard extends preact.Component<{
 		const step = () => {
 			while (i < events.length && skipEvent(events, i)) i++;
 			if (i >= events.length) {
-				this.clearFx();
+				this.finishFx();
 				return;
 			}
 			const e = events[i];
@@ -1824,7 +1852,7 @@ export class TcgBoard extends preact.Component<{
 					show(fx, e);
 					this.stashHands(this.props.snapshot);
 					i++;
-					const wait = fx.kind === 'drawEffect' ? 3200 : Math.max(fxDuration(e), 400);
+					const wait = Math.max(fx.kind === 'drawEffect' ? 3200 : fxDuration(e), BEAT_MS);
 					this.timer = window.setTimeout(step, wait);
 				}, 2000);
 				return;
@@ -1846,7 +1874,7 @@ export class TcgBoard extends preact.Component<{
 						const playStatus = () => {
 							if (hi >= statusHits.length) {
 								i++;
-								this.timer = window.setTimeout(step, 120);
+								this.timer = window.setTimeout(step, BEAT_MS);
 								return;
 							}
 							const h = statusHits[hi++];
@@ -1862,7 +1890,7 @@ export class TcgBoard extends preact.Component<{
 						return;
 					}
 					i++;
-					this.timer = window.setTimeout(step, 120);
+					this.timer = window.setTimeout(step, BEAT_MS);
 					return;
 				}
 				if (numbered.length > 1) {
@@ -1872,7 +1900,7 @@ export class TcgBoard extends preact.Component<{
 					const playHit = () => {
 						if (hi >= hits.length) {
 							i++;
-							this.timer = window.setTimeout(step, 180);
+							this.timer = window.setTimeout(step, BEAT_MS);
 							return;
 						}
 						const h = hits[hi++];
@@ -1906,7 +1934,7 @@ export class TcgBoard extends preact.Component<{
 			}
 
 			show(fx, e);
-			const wait = fx.kind === 'drawEffect' ? 3200 : Math.max(fxDuration(e), 400);
+			const wait = Math.max(fx.kind === 'drawEffect' ? 3200 : fxDuration(e), BEAT_MS);
 			i++;
 			this.timer = window.setTimeout(step, wait);
 		};
