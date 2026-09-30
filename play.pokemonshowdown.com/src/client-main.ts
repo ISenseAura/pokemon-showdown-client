@@ -678,6 +678,11 @@ class PSUser extends PSStreamModel<PSLoginState | null> {
 		this.named = named;
 		this.avatar = avatar;
 		this.away = fullName.endsWith('@!');
+		try {
+			if (named && this.userid && !/^guest\d+$/.test(this.userid)) {
+				localStorage.setItem('showdown_username', this.name);
+			}
+		} catch {}
 		this.update(null);
 		if (loggingIn) {
 			for (const roomid in PS.rooms) {
@@ -811,6 +816,9 @@ class PSUser extends PSStreamModel<PSLoginState | null> {
 			'logout', { userid: this.userid }
 		);
 		PS.send(`/logout`);
+		try {
+			localStorage.removeItem('showdown_username');
+		} catch {}
 		PS.connection?.disconnect();
 
 		PS.alert("You have been logged out and disconnected.\n\nIf you wanted to change your name while staying connected, use the 'Change Name' button or the '/nick' command.");
