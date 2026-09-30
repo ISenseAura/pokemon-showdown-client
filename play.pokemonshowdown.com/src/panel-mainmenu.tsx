@@ -339,6 +339,8 @@ export class MainMenuRoom extends PSRoom {
 				}
 				// make sure formats aren't out-of-order
 				if (BattleFormats[id]) delete BattleFormats[id];
+				const tcgLadder = toID(id).replace(/^gen\d/, '').startsWith('tcg');
+				if (tcgLadder) searchShow = true;
 				BattleFormats[id] = {
 					id,
 					name,
@@ -351,7 +353,7 @@ export class MainMenuRoom extends PSRoom {
 					bestOfDefault,
 					teraPreviewDefault,
 					itemClauseDefault,
-					rated: searchShow && id.substr(4, 7) !== 'unrated',
+					rated: tcgLadder || (searchShow && id.substr(4, 7) !== 'unrated'),
 					teambuilderLevel,
 					partner,
 					teambuilderFormat,

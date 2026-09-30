@@ -277,10 +277,7 @@ export class PSStorage {
 			if (this.loaded === true) return;
 			return this.loaded;
 		}
-		if (Config.testclient || location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
-			// Local pages are not the production client host, so crossdomain.php
-			// will never answer. Connect to the server in config.js instead.
-			Config.server ||= Config.defaultserver;
+		if (Config.testclient) {
 			return;
 		} else if (`${location.protocol}//${location.hostname}` === PSStorage.origin) {
 			// Same origin, everything can be kept as default
@@ -457,12 +454,9 @@ export const PSLoginServer = new class {
 		// 	return Promise.resolve(null);
 		// }
 		data.act = act;
-		// Same-origin only. action.php forwards this to the official login server.
-		// A browser request straight to play.pokemonshowdown.com is blocked by CORS
-		// when this client is hosted on another domain (including index.html).
-		let url = '/action.php?serverid=' + encodeURIComponent(PS.server.id);
-		if (Config.testclient && location.hostname !== Config.routes.client) {
-			url = 'https://play.pokemonshowdown.com/~~' + PS.server.id + '/action.php';
+		let url = '/~~' + PS.server.id + '/action.php';
+		if (location.pathname.endsWith('.html')) {
+			url = 'https://' + Config.routes.client + url;
 			if (typeof POKEMON_SHOWDOWN_TESTCLIENT_KEY === 'string') {
 				data.sid = POKEMON_SHOWDOWN_TESTCLIENT_KEY.replace(/%2C/g, ',');
 			}

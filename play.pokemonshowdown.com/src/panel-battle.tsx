@@ -683,7 +683,11 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 				room.log?.add(['html', chatHtmlForEntry(entry)]);
 			}
 		} else if (typeof data.seq === 'number') {
-			room.tcgLastSeq = Math.max(room.tcgLastSeq, data.seq);
+			// |request| often arrives with the same events before |tcg|. Don't advance
+			// lastSeq there or the following |tcg| will skip every chat line.
+			if (!(skipFx && data.events?.length)) {
+				room.tcgLastSeq = Math.max(room.tcgLastSeq, data.seq);
+			}
 		}
 		room.updateChoiceNotification();
 		room.update(null);
