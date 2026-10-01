@@ -1914,6 +1914,15 @@ span.tcg-card-backface {
 .tcg-mon.fx-energy { animation: fx-energy-glow 1.25s ease; }
 .tcg-mon { position: relative; }
 .tcg-mon[data-fx]::after {
+/* Opponent's opening Pokémon: a card back until both players are ready, then one flip. */
+.tcg-mon.face-down { cursor: default; }
+.tcg-mon.face-down .tcg-card { pointer-events: none; }
+.tcg-mon.fx-reveal { animation: fx-reveal 0.9s cubic-bezier(.2,.75,.2,1) both; transition: none; }
+@keyframes fx-reveal {
+  0%   { transform: perspective(700px) rotateY(90deg) scale(1.04); filter: brightness(1.6); }
+  55%  { transform: perspective(700px) rotateY(-12deg) scale(1.06); filter: brightness(1.15); }
+  100% { transform: perspective(700px) rotateY(0) scale(1); filter: none; }
+}
   content: attr(data-fx);
   position: absolute;
   left: 50%;
@@ -3837,3 +3846,5 @@ span.tcg-card-backface {
 		transition-duration: 0.01ms !important;
 	}
 }
+	/* The header owns the top 44px on a phone; FX captions sit just under it, not on the turn badge. */
+	.fx-caption { top: 52px; }

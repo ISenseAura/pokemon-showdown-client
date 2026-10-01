@@ -35,6 +35,8 @@ export interface TcgPokemonView {
 	burned?: boolean;
 	image?: string;
 	lastDelta?: number;
+	/** Opponent's setup Pokémon: placed face down until both players are ready (client-side placeholder). */
+	faceDown?: boolean;
 }
 
 export interface TcgPlayerView {
@@ -179,16 +181,25 @@ const printedNames: { [id: string]: string } = {
 	'base1-100': 'Lightning Energy',
 	'base1-101': 'Psychic Energy',
 	'base1-102': 'Fighting Energy',
+	// Scarlet & Violet basic Energy (the Pocket Energy Zone attaches these ids).
+	'sve-1': 'Grass Energy', 'sve-2': 'Fire Energy', 'sve-3': 'Water Energy', 'sve-4': 'Lightning Energy',
+	'sve-5': 'Psychic Energy', 'sve-6': 'Fighting Energy', 'sve-7': 'Darkness Energy', 'sve-8': 'Metal Energy',
+	'sve-9': 'Grass Energy', 'sve-10': 'Fire Energy', 'sve-11': 'Water Energy', 'sve-12': 'Lightning Energy',
+	'sve-13': 'Psychic Energy', 'sve-14': 'Fighting Energy', 'sve-15': 'Darkness Energy', 'sve-16': 'Metal Energy',
 };
-let printedNamesLoaded = false;
-function loadPrintedNames() {
-	if (printedNamesLoaded || typeof fetch !== 'function') return;
-	printedNamesLoaded = true;
-	fetch('/tcg-names.json').then(res => res.ok ? res.json() : null).then(data => {
+const printedNamesLoaded: { [file: string]: boolean } = {};
+function loadPrintedNames(file = '/tcg-names.json') {
+	if (printedNamesLoaded[file] || typeof fetch !== 'function') return;
+	printedNamesLoaded[file] = true;
+	fetch(file).then(res => res.ok ? res.json() : null).then(data => {
 		if (data) Object.assign(printedNames, data);
 	}).catch(() => { /* keep board names and the basic-energy map */ });
 }
 loadPrintedNames();
+/** The paper (Standard / Expanded / GLC) card index is ~20k entries; only pull it for a paper game. */
+export function loadPaperNames() {
+	loadPrintedNames('/tcg-names-paper.json');
+}
 function printedName(id?: string): string {
 	if (!id) return '';
 	if (printedNames[id]) return printedNames[id];
@@ -385,9 +396,15 @@ function fxDuration(e: TcgEvent): number {
 	return 2000;
 }
 function placeTalk(e: TcgEvent, players?: TcgPlayerView[]): { tag: string, extra: string, text: string } {
-	const name = cardName(players, e.cardId, e.iid) || cardLabel(e.cardId);
 	const actor = whoName(players, e.seat);
 	const bench = e.slot !== 'active' && e.slot != null && e.slot !== '';
+	if (e.faceDown) {
+		// Setup: the opponent's Pokémon stay face down until both players are ready.
+		return bench ?
+			{ tag: 'BENCH', extra: 'Face down', text: `${actor} put a Pokémon face down on the Bench.` } :
+			{ tag: 'ACTIVE', extra: 'Face down', text: `${actor} put a Pokémon face down in the Active Spot.` };
+	}
+	const name = cardName(players, e.cardId, e.iid) || cardLabel(e.cardId);
 	// Live battles don't always include prior act; infer from slot.
 	if (bench) return { tag: 'BENCH', extra: name, text: `${actor} benched ${name}.` };
 	return { tag: 'ACTIVE', extra: name, text: `${name} came into the Active Spot.` };
@@ -416,8 +433,21 @@ function dmgSrc(events: TcgEvent[], i: number, players?: TcgPlayerView[]): { key
 
 export type TcgChatEntry = { kind: string, label: string, text: string, turn?: number, seat?: number };
 
+/**
+ * "their deck" / "their discard pile" / "their Prize cards" for a search. The sim only tells the
+ * searching seat which zone it is (snapshot.pendingSearch), so the other side gets a neutral phrase.
+ */
+function searchZoneText(snap: TcgSnapshot | null | undefined, seat: number | undefined, own: boolean): string {
+	const whose = own ? 'your' : 'their';
+	const zone = snap && snap.you != null && seat === snap.you ? snap.pendingSearch?.zone : undefined;
+	if (zone === 'discard') return `${whose} discard pile`;
+	if (zone === 'prizes' || zone === 'prize') return `${whose} Prize cards`;
+	if (zone === 'deck') return `${whose} deck`;
+	return 'for a card';
+}
+
 /** English battle chat from events (graphics.md / Unreal-Bot chatLine). */
-export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[]): TcgChatEntry | null {
+export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?: TcgSnapshot | null): TcgChatEntry | null {
 	const w = (seat: number) => whoName(players, seat);
 	const poke = (iid?: string) => monName(players, iid);
 	const nm = (id?: string) => cardName(players, id) || cardLabel(id);
@@ -433,15 +463,21 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[]): TcgC
 	case 'request':
 		if (ev.kind === 'search') {
 			const seat = (ev.waiting && ev.waiting[0]) ?? 0;
-			return { kind: 'draw', label: 'Search', text: `${w(seat)} is searching their deck.`, seat };
+			return { kind: 'draw', label: 'Search', text: `${w(seat)} is searching ${searchZoneText(snap, seat, false)}.`, seat };
 		}
 		if (ev.kind === 'mulligan') {
 			const seat = (ev.waiting && ev.waiting[0]) ?? 0;
-			return { kind: 'draw', label: 'Mulligan', text: `${w(seat)} took a mulligan.`, seat };
+			const other = seat === 0 ? 1 : 0;
+			return {
+				kind: 'draw', label: 'Mulligan',
+				text: `${w(other)} took a mulligan. ${w(seat)} may bench Basics from their extra cards.`,
+				seat,
+			};
 		}
 		return null;
 	case 'start':
-		return ev.formatId ? { kind: 'setup', label: 'Start', text: `Format: ${ev.formatId}` } : null;
+		// The room header already prints the format's display name; the raw id adds nothing.
+		return null;
 	case 'first':
 		return {
 			kind: 'setup', label: 'First',
@@ -453,7 +489,7 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[]): TcgC
 	case 'deal':
 		return { kind: 'setup', label: 'Deal', text: 'Each player drew 7 cards.' };
 	case 'coin':
-		return { kind: 'coin', label: 'Coin', text: ev.heads ? 'Heads.' : 'Tails.' };
+		return { kind: 'coin', label: 'Coin', text: ev.heads ? 'Coin flip: Heads.' : 'Coin flip: Tails.' };
 	case 'place': {
 		const talk = placeTalk(ev, players);
 		return {
@@ -477,16 +513,14 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[]): TcgC
 		return { kind: 'ability', label: 'Ability', text: `${poke(ev.iid)} used ${ev.name}.` };
 	case 'trainer':
 		return { kind: 'trainer', label: 'Play', text: `${w(ev.seat)} played ${nm(ev.cardId)}.`, seat: ev.seat };
-	case 'energy':
+	case 'energy': case 'tool': {
+		// Attach events carry the Pokémon, not the seat; the owner of the Pokémon did it.
+		const seat = ev.seat ?? findMonSlot(players, ev.iid)?.seat;
 		return {
-			kind: 'energy', label: 'Energy',
-			text: `${w(ev.seat)} attached ${nm(ev.cardId)} to ${poke(ev.iid)}.`, seat: ev.seat,
+			kind: 'energy', label: ev.type === 'tool' ? 'Tool' : 'Energy',
+			text: `${w(seat)} attached ${nm(ev.cardId)} to ${poke(ev.iid)}.`, seat,
 		};
-	case 'tool':
-		return {
-			kind: 'energy', label: 'Tool',
-			text: `${w(ev.seat)} attached ${nm(ev.cardId)} to ${poke(ev.iid)}.`, seat: ev.seat,
-		};
+	}
 	case 'stadium':
 		return { kind: 'trainer', label: 'Stadium', text: `${w(ev.seat)} played ${nm(ev.cardId)}.`, seat: ev.seat };
 	case 'stadiumEnd':
@@ -494,7 +528,7 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[]): TcgC
 	case 'damage':
 		return { kind: 'damage', label: 'Damage', text: `${poke(ev.iid)} took ${ev.amount} damage.` };
 	case 'heal':
-		return { kind: 'heal', label: 'Heal', text: `${poke(ev.iid)} healed ${ev.amount}.` };
+		return { kind: 'heal', label: 'Heal', text: `${poke(ev.iid)} healed ${ev.amount} damage.` };
 	case 'status':
 		return {
 			kind: 'status', label: 'Status',
@@ -506,9 +540,12 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[]): TcgC
 		return { kind: 'ko', label: 'KO', text: `${poke(ev.iid)} was Knocked Out.`, seat: ev.seat };
 	case 'draw': {
 		const n = ev.n || 1;
+		const ids = Array.isArray(ev.ids) ? ev.ids.filter(Boolean) : [];
+		const named = ids.length && ids.length === n ? ids.map(nm).join(', ') : '';
 		return {
 			kind: 'draw', label: 'Draw',
-			text: n === 1 ? `${w(ev.seat)} drew a card.` : `${w(ev.seat)} drew ${n} cards.`,
+			text: named ? `${w(ev.seat)} drew ${named}.` :
+			n === 1 ? `${w(ev.seat)} drew a card.` : `${w(ev.seat)} drew ${n} cards.`,
 			seat: ev.seat,
 		};
 	}
@@ -518,7 +555,9 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[]): TcgC
 			`${w(ev.seat)} put ${nm(ids[0])} into their hand.` :
 			ids.length > 1 ?
 				`${w(ev.seat)} put ${ids.map(nm).join(', ')} into their hand.` :
-				`${w(ev.seat)} put ${(ev.ids && ev.ids.length) || 1} card(s) into their hand.`;
+				((ev.ids && ev.ids.length) || ev.n || 1) === 1 ?
+					`${w(ev.seat)} put a card into their hand.` :
+					`${w(ev.seat)} put ${(ev.ids && ev.ids.length) || ev.n} cards into their hand.`;
 		return { kind: 'draw', label: 'Search', text, seat: ev.seat };
 	}
 	case 'prize':
@@ -527,7 +566,15 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[]): TcgC
 			text: `${w(ev.seat)} takes ${ev.n} Prize card${ev.n === 1 ? '' : 's'}.`, seat: ev.seat,
 		};
 	case 'prizeTake':
-		return { kind: 'prize', label: 'Prize', text: `${w(ev.seat)} took a Prize card.`, seat: ev.seat };
+	{
+		const ids = Array.isArray(ev.ids) ? ev.ids.filter(Boolean) : [];
+		return {
+			kind: 'prize', label: 'Prize',
+			text: ids.length ? `${w(ev.seat)} took a Prize card: ${ids.map(nm).join(', ')}.` :
+			`${w(ev.seat)} took a Prize card.`,
+			seat: ev.seat,
+		};
+	}
 	case 'points':
 		return {
 			kind: 'prize', label: 'Points',
@@ -570,24 +617,30 @@ function fxFor(
 	i: number,
 	players?: TcgPlayerView[],
 	you?: number | null,
+	snap?: TcgSnapshot | null,
 ): FxBeat {
 	if (!e) return { kind: '' };
 	const who = (seat?: number) => actorLabel(players, seat, you);
 	const yours = (seat?: number) => actorIsYou(seat, you);
 	if (e.type === 'request' && e.kind === 'search') {
 		const seat = (e.waiting && e.waiting[0] != null) ? e.waiting[0] : 0;
+		const zone = searchZoneText(snap, seat, yours(seat));
 		return {
 			kind: 'search', seat, n: 5,
-			extra: 'Searching their deck',
-			message: yours(seat) ? 'You are searching your deck' : `${who(seat)} is searching their deck`,
+			extra: `Searching ${zone}`,
+			message: yours(seat) ? `You are searching ${zone}` : `${who(seat)} is searching ${zone}`,
 		};
 	}
 	if (e.type === 'request' && e.kind === 'mulligan') {
+		// The waiting seat is the one who gets to bench extra Basics; the *other* seat mulliganed.
 		const seat = (e.waiting && e.waiting[0] != null) ? e.waiting[0] : 0;
+		const other = seat === 0 ? 1 : 0;
 		return {
 			kind: 'mulligan', seat, n: 7,
-			extra: 'Took a mulligan',
-			message: yours(seat) ? 'You took a mulligan' : `${who(seat)} took a mulligan`,
+			extra: `${who(other)} took a mulligan`,
+			message: yours(seat) ?
+				`${who(other)} took a mulligan — you may bench Basics from your extra cards` :
+				`${who(other)} took a mulligan — ${who(seat)} may bench extra Basics`,
 		};
 	}
 	if (e.type === 'act' && e.action?.type === 'searchDone') {
@@ -763,7 +816,7 @@ function fxFor(
 		return {
 			kind: 'heal', iid: e.iid || '', seat: e.seat, amount: e.amount,
 			extra: e.amount ? `+${e.amount}` : 'Healed',
-			message: `${monName(players, e.iid)} healed ${e.amount || 0}`,
+			message: `${monName(players, e.iid)} healed ${e.amount || 0} damage`,
 		};
 	}
 	if (e.type === 'attack') {
@@ -918,7 +971,7 @@ function MiniArt(props: { cardId?: string, name?: string }) {
 	return <img src={src} alt={props.name || ''} draggable={false} />;
 }
 
-class FxOverlay extends preact.Component<{ fx: FxBeat | null, you?: number | null }> {
+class FxOverlay extends preact.Component<{ fx: FxBeat | null, you?: number | null, names?: string[] }> {
 	override render() {
 		const fx = this.props.fx;
 		if (!fx?.kind) return null;
@@ -1102,9 +1155,12 @@ class FxOverlay extends preact.Component<{ fx: FxBeat | null, you?: number | nul
 		if (k === 'turn') {
 			const isYours = fx.seat != null && this.props.you != null && fx.seat === this.props.you;
 			const turnNo = String(fx.extra || '').match(/Turn\s+(\d+)/i)?.[1];
+			const seatName = fx.seat != null ? this.props.names?.[fx.seat] || '' : '';
+			const whose = isYours ? 'Your Turn' :
+				this.props.you != null || !seatName ? "Opponent's Turn" : `${seatName}'s Turn`;
 			return wrap('turn', <>
 				<div class={`fx-turn-banner${isYours ? ' yours' : ' foe'}`}>
-					<em>{isYours ? 'Your Turn' : "Opponent's Turn"}</em>
+					<em>{whose}</em>
 					{turnNo ? <strong>Turn {turnNo}</strong> : null}
 				</div>
 			</>);
@@ -1396,8 +1452,8 @@ function promptHeading(snap: TcgSnapshot, kind: string): { title: string, sub?: 
 		const dest = ps?.dest === 'bench' ? ' to the Bench' :
 			ps?.dest === 'active' ? ' to Active' :
 			ps?.dest === 'hand' ? ' to your hand' : '';
-		const zone = ps?.zone === 'discard' ? 'from your discard' :
-			ps?.zone === 'prize' ? 'from Prizes' : 'from your deck';
+		const zone = ps?.zone === 'discard' ? 'from your discard pile' :
+			ps?.zone === 'prizes' || ps?.zone === 'prize' ? 'from your Prize cards' : 'from your deck';
 		return { title: `Choose a card${dest}`, sub: `${zone}${left}` };
 	}
 	if (kind === 'pay') return { title: 'Discard Energy to retreat', sub: snap.pendingRetreatPay?.need != null ? `Choose ${snap.pendingRetreatPay.need}` : undefined };
@@ -1596,6 +1652,8 @@ class TcgMon extends preact.Component<{
 	mon: TcgPokemonView | null, slot: TcgSlot, size?: CardSize, selected?: boolean,
 	activeSpot?: boolean, legal?: boolean, foe?: boolean, pkFx?: PkFx | null,
 	dropOk?: boolean, dropHot?: boolean, dropLabel?: string,
+	/** Just flipped face up (end of setup). */
+	reveal?: boolean,
 	onClick?: () => void, onInspect?: (p: Preview) => void,
 }> {
 	baseEl: HTMLElement | null = null;
@@ -1699,11 +1757,26 @@ class TcgMon extends preact.Component<{
 			<div class={`tcg-hp ${hpTone}`} title={`${mon.hp} / ${mon.maxHp || mon.hp} HP`}>
 				<span class="tcg-hp-val">{mon.hp}</span>
 				<span class="tcg-hp-track" aria-hidden="true">
+		if (mon.faceDown) {
+			return <div
+				ref={el => { this.baseEl = el as HTMLElement | null; }}
+				class={`tcg-mon face-down ${activeSpot ? 'active' : ''} ${foe ? 'foe' : ''} ${pkFx?.cls || ''}`}
+				data-iid={mon.iid}
+				data-drop-slot={String(this.props.slot)}
+				data-drop-foe={foe ? '1' : '0'}
+				data-drop-empty="0"
+				title="Face-down Pokémon"
+				onContextMenu={ev => ev.preventDefault()}
+			>
+				<TcgCardFace cardId="" name="Face-down Pokémon" size={cardSize} back />
+			</div>;
+		}
 					<span class="tcg-hp-fill" style={{ width: `${pct}%` }}></span>
 				</span>
 			</div>
 			<div class="tcg-energy-row">
 				{(mon.energy || []).map((t, i) => pip(t, i))}
+			this.props.reveal ? 'fx-reveal' : '',
 			</div>
 			{(mon.status || mon.poisoned || mon.burned) &&
 				<div class="tcg-status">{mon.status}{mon.poisoned ? ' PSN' : ''}{mon.burned ? ' BRN' : ''}</div>}
@@ -1841,6 +1914,9 @@ export class TcgBoard extends preact.Component<{
 	override componentDidMount() {
 		this.stashHands(this.props.snapshot);
 		this.playFx(this.props.events);
+	/** Opponent setup placeholders seen face down, and the ones flipping up on this snapshot. */
+	faceDownSeen: { [iid: string]: true } = {};
+	revealing: { [iid: string]: true } = {};
 		window.addEventListener('pointermove', this.onDragMove);
 		window.addEventListener('pointerup', this.onDragEnd);
 		window.addEventListener('pointercancel', this.onDragEnd);
@@ -1979,7 +2055,22 @@ export class TcgBoard extends preact.Component<{
 				image: mem.image,
 				hp: mem.hp ?? 0,
 				maxHp: mem.maxHp ?? mem.hp ?? 0,
+			// Setup placeholders that just turned face up get one flip animation.
+			this.revealing = {};
+			Object.keys(this.faceDownSeen).forEach(iid => {
+				const now = findMonView(snap.players, iid);
+				if (now && !now.faceDown) {
+					this.revealing[iid] = true;
+					delete this.faceDownSeen[iid];
+				} else if (!now) {
+					delete this.faceDownSeen[iid];
+				}
+			});
 			};
+		snap.players.forEach(p => {
+			if (p?.active?.faceDown) this.faceDownSeen[p.active.iid] = true;
+			(p?.bench || []).forEach(m => { if (m?.faceDown) this.faceDownSeen[m.iid] = true; });
+		});
 		});
 		return held;
 	}
@@ -2101,7 +2192,7 @@ export class TcgBoard extends preact.Component<{
 			}
 			const e = events[i];
 			this.props.onEvent?.(e);
-			let fx = fxFor(e, events, i, players, you);
+			let fx = fxFor(e, events, i, players, you, shown);
 
 			// Prefer private draw ids from the event; otherwise infer from hand delta for your seat.
 			if ((fx.kind === 'draw' || fx.kind === 'drawEffect') && e.type === 'draw') {
@@ -2575,8 +2666,11 @@ export class TcgBoard extends preact.Component<{
 		const yourTurn = !this.props.ended && !this.props.waiting && allActs.length > 0;
 		const turnSeat = typeof snap.turn === 'number' ? snap.turn : null;
 		const turnOwner = turnSeat != null ? snap.players[turnSeat] : null;
-		const isMyTurnSeat = turnSeat != null && turnSeat === meIndex;
-		const turnWho = this.props.ended ? '' :
+		// A spectator sits behind seat 0 for layout, but it is never "their" turn.
+		const isMyTurnSeat = snap.you != null && turnSeat != null && turnSeat === meIndex;
+		// After the game, a replay re-shows earlier snapshots: label those by turn, not "End".
+		const replaying = !!this.props.ended && snap.status !== 'over';
+		const turnWho = this.props.ended && !replaying ? '' :
 			snap.status === 'setup' ? 'Setup phase' :
 			isMyTurnSeat ? 'Your turn' :
 			turnOwner ? `${turnOwner.name}'s turn` : '';
@@ -2631,7 +2725,8 @@ export class TcgBoard extends preact.Component<{
 		const stadiumHot = dragging && drag!.over?.kind === 'stadium' && stadiumDropHits.length > 0;
 		const discardHot = dragging && drag!.over?.kind === 'discard' && discardDropHits.length > 0;
 
-		const hint = (dragging && drag!.hint) ||
+		// No coaching once the game is over (replays re-show setup-phase snapshots).
+		const hint = this.props.ended ? '' : (dragging && drag!.hint) ||
 			snap.pendingConfirm?.text ||
 			(this.state.energyPick ? 'Choose a Pokémon for Energy' : '') ||
 			(this.state.retreatPick ? 'Choose a Benched Pokémon to switch in' : '') ||
@@ -2649,11 +2744,14 @@ export class TcgBoard extends preact.Component<{
 			(snap.status === 'setup' ? 'Drag Basics to Active / Bench, then Ready' : '') ||
 			(yourTurn ? 'Drag cards to play · Tap your Pokémon to attack' : '');
 
-		const waitingOpp = !this.props.ended && (
-			this.props.waiting ||
-			(!yourTurn && !allActs.length) ||
-			(turnSeat != null && !isMyTurnSeat && !allActs.length)
-		);
+		// Only call it "waiting for opponent" when the opponent actually holds the
+		// turn (or still has setup to finish); a server round-trip during our own
+		// turn is not their fault and the banner would just flash on every click.
+		const foeHoldsTurn = snap.status === 'setup' ?
+			me.setup === 'done' && foe.setup !== 'done' :
+			turnSeat != null && !isMyTurnSeat;
+		const waitingOpp = !this.props.ended && snap.you != null && !allActs.length && foeHoldsTurn &&
+			(this.props.waiting || !yourTurn);
 		const st = this.state;
 		let winName = (this.props.winnerName != null && this.props.winnerName !== '') ?
 			this.props.winnerName :
@@ -2717,8 +2815,10 @@ export class TcgBoard extends preact.Component<{
 						<span class="tcg-hand-count" title={`${pileCount(foe.hand)} in hand`}>{pileCount(foe.hand)}</span>
 					</div>
 				</div>
-				<div class={`tcg-turn-badge${yourTurn || isMyTurnSeat ? ' yours' : ''}${this.props.ended ? ' over' : ''}${!isMyTurnSeat && turnSeat != null ? ' foe' : ''}`}>
-					<span class="tcg-turn-num">{this.props.ended ? 'End' : snap.status === 'setup' ? 'Setup' : `Turn ${snap.turnNumber || 1}`}</span>
+				<div class={`tcg-turn-badge${yourTurn || isMyTurnSeat ? ' yours' : ''}${this.props.ended && !replaying ? ' over' : ''}${!isMyTurnSeat && turnSeat != null ? ' foe' : ''}`}>
+					<span class="tcg-turn-num">
+						{this.props.ended && !replaying ? 'End' : snap.status === 'setup' ? 'Setup' : `Turn ${snap.turnNumber || 1}`}
+					</span>
 					{turnWho && <span class="tcg-turn-who">{turnWho}</span>}
 				</div>
 			</header>
@@ -2841,6 +2941,7 @@ export class TcgBoard extends preact.Component<{
 								>
 									<span
 										class="tcg-ezone-now"
+									reveal={!!shown && !!this.revealing[shown.iid]}
 										style={{ background: TYPE_COLOR[zone?.type || 'colorless'] || '#888' }}
 									></span>
 									{zone?.next && <span
@@ -2851,6 +2952,7 @@ export class TcgBoard extends preact.Component<{
 							</>}
 					</div>
 					<div class="tcg-field">
+								reveal={!!foeActive && !!this.revealing[foeActive.iid]}
 						<div class="tcg-zone tcg-active-spot me">
 							<TcgMon
 								mon={meActive} slot="active" activeSpot size="lg"
@@ -2940,6 +3042,7 @@ export class TcgBoard extends preact.Component<{
 						onPointerDown={playable ? (ev: any) => this.startHandDrag(i, id, ev) : undefined}
 						onHold={this.onCardHold}
 						onInspect={this.openInspect}
+								reveal={!!meActive && !!this.revealing[meActive.iid]}
 					/>;
 				}) : Array.from({ length: pileCount(me.hand) }, (_, i) =>
 					<TcgCardFace key={i} back size="md" />
@@ -2954,6 +3057,7 @@ export class TcgBoard extends preact.Component<{
 					<i class={`fa fa-${this.props.paused ? 'play' : 'pause'}`} aria-hidden></i> {this.props.paused ? 'Play' : 'Pause'}
 				</button>
 				<button type="button" class="button" onClick={this.props.onReplay}>
+									reveal={!!shown && !!this.revealing[shown.iid]}
 					<i class="fa fa-undo" aria-hidden></i> Replay
 				</button>
 				<button type="button" class="button" onClick={this.props.onSkip}>
@@ -3178,7 +3282,7 @@ export class TcgBoard extends preact.Component<{
 			</div>}
 			<FxOverlay
 				key={st.fx ? `${st.fx.kind}-${st.fx.iid || ''}-${st.fx.amount || ''}-${Object.values(st.pkFx)[0]?.tick || 0}` : 'fx'}
-				fx={st.fx} you={snap.you}
+				fx={st.fx} you={snap.you} names={snap.players.map(p => p?.name || '')}
 			/>
 		</div>;
 	}

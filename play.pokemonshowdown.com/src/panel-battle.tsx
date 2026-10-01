@@ -23,7 +23,7 @@ import type { Args } from "./battle-text-parser";
 import { ModifiableValue } from "./battle-tooltips";
 import { Net } from "./client-connection";
 import { BattleLog } from "./battle-log";
-import { TcgBoard, isTcgBattleId, chatEntryForEvent, chatHtmlForEntry, noteTcgMons, type TcgAction, type TcgEvent, type TcgSnapshot } from "./battle-tcg";
+import { TcgBoard, isTcgBattleId, chatEntryForEvent, chatHtmlForEntry, noteTcgMons, loadPaperNames, type TcgAction, type TcgEvent, type TcgPokemonView, type TcgSnapshot } from "./battle-tcg";
 
 type BattleDesc = {
 	id: RoomID,
@@ -137,6 +137,12 @@ class BattlesPanel extends PSRoomPanel<BattlesRoom> {
 	}
 }
 
+/** Same TCG event batch (by seq)? */
+function sameTcgEvents(a: TcgEvent[] | undefined, b: TcgEvent[] | undefined): boolean {
+	if (!a?.length || !b?.length || a.length !== b.length) return false;
+	return a.every((ev, i) => ev.seq === b[i].seq && ev.type === b[i].type);
+}
+
 export class BattleRoom extends ChatRoom {
 	override readonly classType = 'battle';
 	declare pmTarget: null;
@@ -165,6 +171,12 @@ export class BattleRoom extends ChatRoom {
 	tcgLastSeq = 0;
 	tcgWait = false;
 	tcgPlaying = false;
+	/** Highest event seq already queued for FX; repeats are dropped. */
+	tcgSeqSeen = 0;
+	/** Status of the newest payload (events can arrive without a snapshot). */
+	tcgLatestStatus: string | undefined = undefined;
+	/** Opponent setup placements we show face down: seat → slot → iid. */
+	tcgSetupHidden: { [seat: number]: { [slot: string]: string } } = {};
 	/** Payloads that arrive during (re)join are history; show the result instead of replaying every beat. */
 	tcgSyncUntil = Date.now() + 2500;
 	tcgQueue: {
@@ -255,6 +267,9 @@ export class BattleRoom extends ChatRoom {
 		this.tcgPlaying = false;
 		this.tcgSyncUntil = Date.now() + 2500;
 		this.tcgLastSeq = 0;
+		this.tcgSeqSeen = 0;
+		this.tcgLatestStatus = undefined;
+		this.tcgSetupHidden = {};
 		this.tcgEnded = false;
 		this.tcgWinner = null;
 		this.updateChoiceNotification();
@@ -262,7 +277,20 @@ export class BattleRoom extends ChatRoom {
 	}
 	/** Beyond this many queued payloads, the oldest are applied instantly so the board never lags minutes behind. */
 	static readonly TCG_MAX_BACKLOG = 12;
+	/** How long a silent |request| echo waits for its animated |tcg| twin before painting on its own. */
+	static readonly TCG_ECHO_HOLD_MS = 400;
 	enqueueTcg(item: BattleRoom['tcgQueue'][number]) {
+		// Each server batch arrives as a silent |request| echo followed by the animated |tcg|
+		// payload with the same events. If the echo is still waiting in the queue, let the
+		// animated twin carry the board instead, so the result never paints before its beat.
+		if (item.animate && item.events?.length && !item.replay) {
+			const last = this.tcgQueue[this.tcgQueue.length - 1];
+			if (last && !last.animate && last.silent && !last.replay && sameTcgEvents(last.events, item.events)) {
+				this.tcgQueue.pop();
+				const hist = this.tcgHistory[this.tcgHistory.length - 1];
+				if (hist && hist.silent && sameTcgEvents(hist.events, last.events)) this.tcgHistory.pop();
+			}
+		}
 		if (!item.replay) {
 			this.tcgHistory.push({
 				...item,
@@ -280,6 +308,13 @@ export class BattleRoom extends ChatRoom {
 		}
 		// A request must not paint the resulting board while an earlier beat is still playing.
 		if (!item.animate && !this.tcgPlaying && !this.tcgQueue.length) {
+			if (item.silent && item.events?.length) {
+				// Hold the echo briefly: its animated twin normally follows within a few ms.
+				this.tcgQueue.push(item);
+				this.tcgWait = true;
+				window.setTimeout(() => this.pumpTcg(), BattleRoom.TCG_ECHO_HOLD_MS);
+				return;
+			}
 			this.commitTcg(item, false);
 			return;
 		}
@@ -336,7 +371,7 @@ export class BattleRoom extends ChatRoom {
 		if (typeof ev.seq === 'number' && ev.seq <= this.tcgLastSeq) return;
 		if (typeof ev.seq === 'number') this.tcgLastSeq = Math.max(this.tcgLastSeq, ev.seq);
 		const players = this.tcgFxSnapshot?.players || this.tcgSnapshot?.players;
-		const entry = chatEntryForEvent(ev, players);
+		const entry = chatEntryForEvent(ev, players, this.tcgFxSnapshot || this.tcgSnapshot);
 		if (!entry) return;
 		if (ev.type === 'turn') {
 			const esc = (s: string) => String(s || '')
@@ -387,13 +422,24 @@ export class BattleRoom extends ChatRoom {
 		this.tcgFxSnapshot = null;
 		this.tcgEvents = [];
 		this.tcgWait = true;
-		this.tcgQueue = this.tcgHistory.map(item => ({
-			...item,
-			events: item.events?.slice(),
-			animate: !!item.events?.length && !PS.prefs.noanim,
-			silent: true,
-			replay: true,
-		}));
+		// The history holds both the silent |request| echo and the animated |tcg| payload for
+		// each batch; play every event once.
+		let seen = 0;
+		this.tcgQueue = this.tcgHistory.map(item => {
+			const events = (item.events || []).filter(ev => {
+				if (typeof ev.seq !== 'number') return true;
+				if (ev.seq <= seen) return false;
+				seen = ev.seq;
+				return true;
+			});
+			return {
+				...item,
+				events,
+				animate: !!events.length && !PS.prefs.noanim,
+				silent: true,
+				replay: true,
+			};
+		});
 		this.pumpTcg();
 	};
 
@@ -814,21 +860,77 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		if (data.kind === 'watch' && room.tcgSnapshot?.you != null) {
 			return;
 		}
+		if (data.snapshot && !data.snapshot.format?.energyZone &&
+			!data.snapshot.players?.some(p => p?.energyZone)) {
+			loadPaperNames();
+		}
 		const wait = data.wait != null ? data.wait : (data.snapshot ? !data.snapshot.actions?.length : undefined);
 		const ended = data.snapshot?.status === 'over';
 		let winner: string | null | undefined;
 		if (ended && data.snapshot?.winner != null) {
 			winner = data.snapshot.players?.[data.snapshot.winner]?.name || null;
 		}
+		// The server may send the same batch twice (the opening |tcg| payload is repeated);
+		// animate each event once. The silent |request| echo never animates, so it is not counted.
+		const fresh = skipFx ? data.events : data.events?.filter(ev => {
+			if (typeof ev.seq !== 'number') return true;
+			if (ev.seq <= room.tcgSeqSeen) return false;
+			room.tcgSeqSeen = ev.seq;
+			return true;
+		});
+		const events = this.hideSetupPlacements(data.snapshot, fresh);
 		room.enqueueTcg({
 			snapshot: data.snapshot,
-			events: data.events,
+			events,
 			wait,
-			animate: !skipFx && !!data.events?.length && !PS.prefs.noanim,
+			animate: !skipFx && !!events?.length && !PS.prefs.noanim,
 			silent: skipFx,
 			markEnded: ended || undefined,
 			winner,
 		});
+	}
+	/**
+	 * Official rules: opening Active and Bench Pokémon are placed face down and only
+	 * turned up once both players are ready. The sim still names the other seat's
+	 * card in its setup `place` events, so strip that here and show a card back instead.
+	 */
+	hideSetupPlacements(snapshot: TcgSnapshot | undefined, events: TcgEvent[] | undefined): TcgEvent[] | undefined {
+		const room = this.props.room;
+		const status = snapshot?.status ?? room.tcgLatestStatus;
+		if (snapshot) room.tcgLatestStatus = snapshot.status;
+		if (status !== 'setup') {
+			room.tcgSetupHidden = {};
+			return events;
+		}
+		const you = snapshot?.you ?? room.tcgSnapshot?.you ?? null;
+		const hidden = room.tcgSetupHidden;
+		const out = events?.map(ev => {
+			if (ev.type !== 'place' || ev.seat == null || ev.seat === you || !ev.iid) return ev;
+			const slot = ev.slot === 'active' || ev.slot == null || ev.slot === '' ? 'active' : String(ev.slot);
+			hidden[ev.seat] = { ...hidden[ev.seat], [slot]: ev.iid };
+			return { ...ev, cardId: '', faceDown: true };
+		});
+		if (snapshot) {
+			Object.keys(hidden).forEach(seatKey => {
+				const seat = Number(seatKey);
+				const p = snapshot.players?.[seat];
+				if (!p || seat === you) return;
+				const slots = hidden[seat];
+				const placeholder = (iid: string): TcgPokemonView => ({
+					iid, cardId: '', name: '', hp: 0, maxHp: 0, faceDown: true,
+				});
+				if (slots.active && !p.active) p.active = placeholder(slots.active);
+				const bench = (p.bench || []).slice();
+				Object.keys(slots).forEach(slotKey => {
+					if (slotKey === 'active') return;
+					const i = Number(slotKey);
+					if (!bench[i]) bench[i] = placeholder(slots[slotKey]);
+				});
+				// No sparse holes: the board maps over this array.
+				p.bench = Array.from(bench, m => m || null) as TcgPokemonView[];
+			});
+		}
+		return out;
 	}
 	sendTcgAction = (action: TcgAction) => {
 		const room = this.props.room;
