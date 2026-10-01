@@ -1027,9 +1027,9 @@ export class TeamForm extends preact.Component<{
 		if (window.BattleFormats) {
 			this.format ||= this.props.defaultFormat || '';
 			if (!this.format || !toID(this.format).replace(/^gen\d/, '').startsWith('tcg')) {
-				this.format = Object.keys(window.BattleFormats).find(
-					id => toID(id).replace(/^gen\d/, '').startsWith('tcg')
-				) || '';
+				const formats = Object.keys(window.BattleFormats);
+				this.format = formats.find(id => toID(id).includes('tcgstandardrandom')) ||
+					formats.find(id => toID(id).replace(/^gen\d/, '').startsWith('tcg')) || '';
 
 				const starredPrefs = PS.prefs.starredformats || {};
 				// .reverse() because the newest starred format should be the default one

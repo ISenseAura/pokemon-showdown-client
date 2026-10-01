@@ -1718,8 +1718,18 @@ class TcgMon extends preact.Component<{
 		this.clearHold();
 	}
 	override componentDidUpdate(prev: this['props']) {
+		if (prev.mon?.iid !== this.props.mon?.iid && this.hpRaf != null) {
+			// A different Pokémon now sits here: do not finish the old one's tick on its number.
+			cancelAnimationFrame(this.hpRaf);
+			this.hpRaf = null;
+			this.hpEl?.classList.remove('hp-dropping', 'hp-rising');
+		}
 		if (prev.mon && this.props.mon && prev.mon.iid === this.props.mon.iid && prev.mon.hp !== this.props.mon.hp) {
 			this.tweenHp(prev.mon.hp, this.props.mon.hp);
+		} else if (this.props.mon && this.hpEl && this.hpRaf == null && this.hpEl.textContent !== String(this.props.mon.hp)) {
+			// The tween writes the text node directly; preact skips a rewrite when the
+			// vnode text did not change, so make sure the final number is the real one.
+			this.hpEl.textContent = String(this.props.mon.hp);
 		}
 		const cur = this.props.pkFx;
 		const was = prev.pkFx;
@@ -1909,6 +1919,8 @@ export class TcgBoard extends preact.Component<{
 			hp: { [iid: string]: number },
 			energy: { [iid: string]: string[] },
 		},
+		/** fxKey the live overlay was built for; an overlay from an earlier batch is ignored. */
+		liveKey: -1,
 		inspect: null as Preview | null,
 		menuSlot: null as TcgSlot | null,
 		endTurnConfirm: false,
@@ -2054,15 +2066,28 @@ export class TcgBoard extends preact.Component<{
 
 	clearFx() {
 		if (this.state.fx?.kind === 'ko' && this.state.fx.iid) delete this.freshOut[this.state.fx.iid];
-		this.setState({ fx: null, pkFx: {}, koGhost: null, koHide: {}, placeIn: null, live: { hand: {}, hp: {}, energy: {} } });
+		this.liveNow = { hand: {}, hp: {}, energy: {} };
+		this.setState({ fx: null, pkFx: {}, koGhost: null, koHide: {}, placeIn: null, live: this.liveNow });
 	}
 
+	/**
+	 * Synchronous copy of state.live. Each batch starts from an empty overlay: its
+	 * snapshot already includes everything earlier batches animated, so carrying the
+	 * old overlay over would subtract that damage (or remove that hand card) twice.
+	 */
+	liveNow: TcgBoard['state']['live'] = { hand: {}, hp: {}, energy: {} };
+	static readonly NO_LIVE: TcgBoard['state']['live'] = { hand: {}, hp: {}, energy: {} };
+	/** The overlay to render with: only while a beat of the current batch is on screen. */
+	liveOverlay() {
+		if (!this.state.fx || this.state.liveKey !== this.props.fxKey) return TcgBoard.NO_LIVE;
+		return this.state.live;
+	}
 	/** Fold a beat that is now playing into the live overlay (see state.live). */
 	applyLive(fx: FxBeat, you: number | null | undefined) {
 		const live = {
-			hand: { ...this.state.live.hand },
-			hp: { ...this.state.live.hp },
-			energy: { ...this.state.live.energy },
+			hand: { ...this.liveNow.hand },
+			hp: { ...this.liveNow.hp },
+			energy: { ...this.liveNow.energy },
 		};
 		const oldPlayers = this.props.snapshot.players;
 		const finalPlayers = this.props.fxSnapshot?.players || oldPlayers;
@@ -2088,6 +2113,7 @@ export class TcgBoard extends preact.Component<{
 			const after = findMonView(finalPlayers, fx.iid);
 			if (after?.energy) live.energy[fx.iid] = after.energy;
 		}
+		this.liveNow = live;
 		return live;
 	}
 
@@ -2170,8 +2196,9 @@ export class TcgBoard extends preact.Component<{
 		if (live && this.state.koHide[live.iid]) return null;
 		if (live && placed && live.iid === placed.mon.iid) return null;
 		if (live) {
-			const hp = this.state.live.hp[live.iid];
-			const energy = this.state.live.energy[live.iid];
+			const overlay = this.liveOverlay();
+			const hp = overlay.hp[live.iid];
+			const energy = overlay.energy[live.iid];
 			if (hp == null && !energy) return live;
 			return { ...live, hp: hp ?? live.hp, energy: energy || live.energy };
 		}
@@ -2267,6 +2294,8 @@ export class TcgBoard extends preact.Component<{
 
 	runFx(events: TcgEvent[]) {
 		if (this.timer != null) window.clearTimeout(this.timer);
+		// New batch, new baseline: props.snapshot now already reflects the previous batch.
+		this.liveNow = { hand: {}, hp: {}, energy: {} };
 		const shown = this.props.fxSnapshot || this.props.snapshot;
 		const players = shown.players;
 		const you = shown.you;
@@ -2313,7 +2342,10 @@ export class TcgBoard extends preact.Component<{
 				fx.fromBench = !!(fromOld && fromOld.slot !== 'active' && slot === 'active');
 				if (incoming) placeIn = { seat, slot, mon: incoming };
 			}
-			this.setState({ fx, pkFx: buildPkFx(fx, fxTick), koGhost, koHide, placeIn, live: this.applyLive(fx, you) });
+			this.setState({
+				fx, pkFx: buildPkFx(fx, fxTick), koGhost, koHide, placeIn,
+				live: this.applyLive(fx, you), liveKey: this.props.fxKey,
+			});
 		};
 
 		const step = () => {
@@ -2791,7 +2823,7 @@ export class TcgBoard extends preact.Component<{
 		const benchSize = snap.format?.benchSize || Math.max(me.bench.length, foe.bench.length, 3);
 		const myHandAll = handIds(me.hand);
 		// Cards whose play beat has already run leave the fan now, not when the batch commits.
-		const spent = { ...this.state.live.hand };
+		const spent = { ...this.liveOverlay().hand };
 		const myHand = myHandAll && myHandAll
 			.map((id, i) => ({ id, i }))
 			.filter(c => {
