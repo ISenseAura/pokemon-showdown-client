@@ -1721,38 +1721,61 @@ span.tcg-card-backface {
  *********************************************************/
 @keyframes fx-hit {
   0% { transform: translate(0) scale(1); filter: brightness(1); }
-  8% { transform: translate(-16px, 5px) rotate(-6deg) scale(0.94); filter: brightness(2.4) saturate(1.8); }
-  18% { transform: translate(14px, -6px) rotate(5deg) scale(1.04); filter: brightness(1.7); }
-  32% { transform: translate(-10px, 3px) rotate(-3deg) scale(0.98); filter: brightness(1.35); }
-  50% { transform: translate(6px, -2px) rotate(2deg); }
-  70% { transform: translate(-3px, 1px); filter: brightness(1.1); }
+  6% { transform: translate(-10px, calc(var(--dir) * -14px)) rotate(calc(var(--dir) * 5deg)) scale(0.95); filter: brightness(2.6) saturate(0.4) contrast(1.3); }
+  16% { transform: translate(12px, calc(var(--dir) * -8px)) rotate(calc(var(--dir) * -4deg)) scale(1.03); filter: brightness(1.7); }
+  30% { transform: translate(-8px, calc(var(--dir) * -4px)) rotate(calc(var(--dir) * 2deg)) scale(0.99); filter: brightness(1.3); }
+  48% { transform: translate(5px, calc(var(--dir) * -2px)) rotate(calc(var(--dir) * -1deg)); }
+  68% { transform: translate(-2px, 0); filter: brightness(1.08); }
   100% { transform: translate(0) scale(1); filter: brightness(1); }
 }
 @keyframes fx-lunge {
   0% { transform: translateY(0) scale(1); filter: brightness(1); }
-  22% { transform: translateY(6px) scale(0.96); filter: brightness(1.1); }
-  48% { transform: translateY(-16px) scale(1.12); filter: brightness(1.45) drop-shadow(0 0 12px rgba(255, 220, 120, 0.7)); }
+/*
+ * Direction-aware beats. --dir is -1 for your side (toward the top = toward the foe)
+ * and 1 for the opponent's side, so one keyframe set serves both halves:
+ * attackers lunge at their target, hit Pokémon are knocked away from it, cards
+ * enter from the hand side, and a KO'd card sweeps toward its own discard pile.
+ */
+.tcg-mon { --dir: -1; }
+.tcg-mon.foe { --dir: 1; }
+  26% { transform: translateY(calc(var(--dir) * -10px)) scale(0.95); filter: brightness(1.08); }
+  46% { transform: translateY(calc(var(--dir) * 34px)) scale(1.14); filter: brightness(1.5) drop-shadow(0 0 14px rgba(255, 220, 120, 0.8)); }
+  58% { transform: translateY(calc(var(--dir) * 26px)) scale(1.1); filter: brightness(1.3); }
   100% { transform: translateY(0) scale(1); filter: brightness(1); }
 }
 @keyframes fx-place {
-  0% { transform: translateY(-52px) scale(0.78) rotate(-8deg); opacity: 0; filter: brightness(1.55); }
-  38% { transform: translateY(8px) scale(1.06) rotate(1deg); opacity: 1; filter: brightness(1.12); }
-  62% { transform: translateY(-3px) scale(1.01) rotate(0); filter: brightness(1); }
+  0% { transform: translateY(calc(var(--dir) * -64px)) scale(0.72) rotate(calc(var(--dir) * 7deg)); opacity: 0; filter: brightness(1.55) drop-shadow(0 18px 14px rgba(0, 0, 0, 0.45)); }
+  40% { transform: translateY(calc(var(--dir) * 6px)) scale(1.06) rotate(calc(var(--dir) * -1deg)); opacity: 1; filter: brightness(1.12) drop-shadow(0 4px 6px rgba(0, 0, 0, 0.3)); }
+  64% { transform: translateY(calc(var(--dir) * -3px)) scale(1.01) rotate(0); filter: brightness(1); }
   100% { transform: none; opacity: 1; filter: none; }
 }
 @keyframes fx-switch {
-  0% { transform: translateY(46px) scale(0.86); opacity: 0; filter: brightness(1.35); }
-  36% { transform: translateY(-10px) scale(1.05); opacity: 1; filter: brightness(1.1); }
-  62% { transform: translateY(4px) scale(1.01); }
-  100% { transform: none; opacity: 1; filter: none; }
+  0% { transform: translateY(calc(var(--dir) * -54px)) scale(0.86); filter: brightness(1.35); }
+  38% { transform: translateY(calc(var(--dir) * 10px)) scale(1.05); filter: brightness(1.1); }
+  64% { transform: translateY(calc(var(--dir) * -4px)) scale(1.01); }
+  100% { transform: none; filter: none; }
 }
 @keyframes fx-ko {
   0% { opacity: 1; transform: none; filter: none; }
-  8% { transform: scale(1.06); filter: brightness(1.85) saturate(0.5); }
-  22% { transform: scale(1.02) rotate(-3deg); filter: grayscale(0.25) brightness(1.15); }
-  48% { opacity: 1; transform: translateY(10px) rotate(-7deg) scale(0.95); filter: grayscale(0.8) brightness(0.72); }
-  100% { opacity: 0; transform: translateY(42px) rotate(-12deg) scale(0.74); filter: grayscale(1) brightness(0.35); }
+  5% { transform: scale(1.05); filter: brightness(3) saturate(0); }
+  10% { transform: translateX(-6px) scale(1.04); filter: brightness(1.2); }
+  15% { transform: translateX(6px) scale(1.04); filter: brightness(2.2) saturate(0.3); }
+  20% { transform: translateX(-4px) scale(1.03); filter: brightness(1.1); }
+  30% { transform: translateX(0) scale(1.02) rotate(calc(var(--dir) * 2deg)); filter: grayscale(0.3) brightness(1.1); }
+  52% { opacity: 1; transform: translate(0, 0) rotate(calc(var(--dir) * 4deg)) scale(0.98); filter: grayscale(0.8) brightness(0.8); }
+  100% { opacity: 0; transform: translate(150px, calc(var(--dir) * -70px)) rotate(calc(var(--dir) * 18deg)) scale(0.5); filter: grayscale(1) brightness(0.45); }
 }
+/* The whole table flinches with a hit; stronger when the hit is a KO. */
+@keyframes arena-shake {
+  0%, 100% { transform: translate(0, 0); }
+  12% { transform: translate(-5px, 3px); }
+  28% { transform: translate(5px, -3px); }
+  44% { transform: translate(-3px, 2px); }
+  62% { transform: translate(2px, -1px); }
+  80% { transform: translate(-1px, 0); }
+}
+.tcg-table:has(.tcg-mon.fx-hit) .tcg-arena { animation: arena-shake 0.5s cubic-bezier(.36,.07,.19,.97); }
+.tcg-table:has(.tcg-mon.fx-ko) .tcg-arena { animation: arena-shake 0.6s cubic-bezier(.36,.07,.19,.97); }
 @keyframes fx-evolve {
   0% { transform: scale(0.72) rotate(-10deg); filter: brightness(2.4) saturate(1.6); }
   18% { transform: scale(1.18) rotate(4deg); filter: brightness(1.9) drop-shadow(0 0 22px rgba(255, 230, 120, 0.95)); }
@@ -1874,9 +1897,11 @@ span.tcg-card-backface {
   100% { transform: translate(-50%, -70%) scale(0.8); opacity: 0; }
 }
 .tcg-mon.fx-hit { animation: fx-hit 0.85s cubic-bezier(.36,.07,.19,.97); transition: none; }
-.tcg-mon.fx-lunge { animation: fx-lunge 0.7s cubic-bezier(.2,.8,.2,1); transition: none; }
-.tcg-mon.fx-place { animation: fx-place 1.85s cubic-bezier(.2,.8,.2,1) both; z-index: 5; transition: none; }
-.tcg-mon.fx-switch { animation: fx-switch 1.85s cubic-bezier(.2,.85,.2,1) both; z-index: 5; transition: none; }
+.tcg-mon.fx-lunge { animation: fx-lunge 0.8s cubic-bezier(.3,.7,.2,1); transition: none; z-index: 5; }
+.tcg-mon.fx-place { animation: fx-place 1.4s cubic-bezier(.2,.8,.2,1) both; z-index: 5; transition: none; }
+.tcg-mon.fx-switch { animation: fx-switch 1.4s cubic-bezier(.2,.85,.2,1) both; z-index: 5; transition: none; }
+/* Pokémon that move between slots (retreat, promote, bench shifts) glide there (FLIP, see TcgBoard). */
+.tcg-mon.is-flipping { z-index: 4; transition: none; transform-origin: top left; }
 .tcg-mon.fx-evolve { animation: fx-evolve 1.35s cubic-bezier(.2,.75,.2,1); }
 .tcg-mon.fx-ko {
   animation: fx-ko 2.45s cubic-bezier(.22,.55,.2,1) forwards;
@@ -1889,6 +1914,15 @@ span.tcg-card-backface {
 }
 @keyframes fx-ko-glow {
   0%, 100% { box-shadow: 0 8px 18px rgba(0, 0, 0, 0.55); }
+/* Opponent's opening Pokémon: a card back until both players are ready, then one flip. */
+.tcg-mon.face-down { cursor: default; }
+.tcg-mon.face-down .tcg-card { pointer-events: none; }
+.tcg-mon.fx-reveal { animation: fx-reveal 0.9s cubic-bezier(.2,.75,.2,1) both; transition: none; }
+@keyframes fx-reveal {
+  0%   { transform: perspective(700px) rotateY(90deg) scale(1.04); filter: brightness(1.6); }
+  55%  { transform: perspective(700px) rotateY(-12deg) scale(1.06); filter: brightness(1.15); }
+  100% { transform: perspective(700px) rotateY(0) scale(1); filter: none; }
+}
   12% { box-shadow: 0 0 28px rgba(255, 90, 40, 0.9); }
   50% { box-shadow: 0 8px 18px rgba(80, 20, 10, 0.5); }
 }
@@ -1914,15 +1948,6 @@ span.tcg-card-backface {
 .tcg-mon.fx-energy { animation: fx-energy-glow 1.25s ease; }
 .tcg-mon { position: relative; }
 .tcg-mon[data-fx]::after {
-/* Opponent's opening Pokémon: a card back until both players are ready, then one flip. */
-.tcg-mon.face-down { cursor: default; }
-.tcg-mon.face-down .tcg-card { pointer-events: none; }
-.tcg-mon.fx-reveal { animation: fx-reveal 0.9s cubic-bezier(.2,.75,.2,1) both; transition: none; }
-@keyframes fx-reveal {
-  0%   { transform: perspective(700px) rotateY(90deg) scale(1.04); filter: brightness(1.6); }
-  55%  { transform: perspective(700px) rotateY(-12deg) scale(1.06); filter: brightness(1.15); }
-  100% { transform: perspective(700px) rotateY(0) scale(1); filter: none; }
-}
   content: attr(data-fx);
   position: absolute;
   left: 50%;
@@ -3590,7 +3615,17 @@ span.tcg-card-backface {
 	transition: opacity var(--t-med) ease, filter var(--t-med) ease, transform var(--t-med) var(--ease-out);
 }
 .tcg-hand-mine .tcg-card-fan {
-	transition: margin var(--t-med) var(--ease-out), transform var(--t-med) var(--ease-out), opacity var(--t-med) ease;
+	transition: margin 0.4s var(--ease-out), transform 0.4s var(--ease-out), opacity var(--t-med) ease;
+}
+/* A card that just reached the hand slides in from the deck side (right) and settles. */
+.tcg-hand-mine:not(.is-shuffling) .tcg-card-fan .tcg-card-inner {
+	animation: hand-card-in 0.55s cubic-bezier(.2,.8,.2,1) backwards;
+	animation-delay: calc((var(--fan, 0) + 4) * 0.035s); /* a dealt hand fans out left to right */
+}
+@keyframes hand-card-in {
+	0% { transform: translate(140px, -70px) rotate(14deg) scale(0.6); opacity: 0; filter: brightness(1.4); }
+	60% { transform: translate(-6px, 4px) rotate(-2deg) scale(1.04); opacity: 1; filter: brightness(1.1); }
+	100% { transform: none; opacity: 1; filter: none; }
 }
 .tcg-hand-mine .tcg-card:hover .tcg-card-inner,
 .tcg-hand-mine .tcg-card-selected .tcg-card-inner {
@@ -3648,7 +3683,20 @@ span.tcg-card-backface {
 
 /* HP and energy */
 .tcg-hp-fill {
-	transition: width 0.6s var(--ease-out), background var(--t-med) ease;
+	transition: width 0.65s cubic-bezier(.2,.7,.2,1) 0.12s, background var(--t-med) ease;
+}
+/* The number ticks down (TcgMon.tweenHp) and flashes while it moves. */
+.tcg-hp-val.hp-dropping { animation: hp-tick-drop 0.65s ease; }
+.tcg-hp-val.hp-rising { animation: hp-tick-rise 0.65s ease; }
+@keyframes hp-tick-drop {
+	0% { transform: scale(1); }
+	18% { transform: scale(1.22); color: #fff; background: #b91c1c; border-color: #fecaca; }
+	100% { transform: scale(1); }
+}
+@keyframes hp-tick-rise {
+	0% { transform: scale(1); }
+	18% { transform: scale(1.18); color: #fff; background: #15803d; border-color: #bbf7d0; }
+	100% { transform: scale(1); }
 }
 .tcg-hp-val, .tcg-hp-badge {
 	transition: border-color var(--t-med) ease, background var(--t-med) ease, color var(--t-med) ease;
@@ -3798,6 +3846,8 @@ span.tcg-card-backface {
 	.tcg-field { height: auto; }
 	.tcg-half.foe .tcg-field,
 	.tcg-half.me .tcg-field {
+	/* The header owns the top 44px on a phone; FX captions sit just under it, not on the turn badge. */
+	.fx-caption { top: 52px; }
 		height: auto;
 		gap: 6px;
 		grid-template-rows: auto auto;
@@ -3846,5 +3896,3 @@ span.tcg-card-backface {
 		transition-duration: 0.01ms !important;
 	}
 }
-	/* The header owns the top 44px on a phone; FX captions sit just under it, not on the turn badge. */
-	.fx-caption { top: 52px; }

@@ -1688,7 +1688,39 @@ class TcgMon extends preact.Component<{
 		this.props.onClick?.();
 	};
 
+	hpEl: HTMLElement | null = null;
+	hpRaf: number | null = null;
+	/** Tick the HP number from the old value to the new one instead of snapping (TCG Live style). */
+	tweenHp(from: number, to: number) {
+		const el = this.hpEl;
+		if (!el || from === to || PS.prefs.noanim) return;
+		if (this.hpRaf != null) cancelAnimationFrame(this.hpRaf);
+		const start = performance.now();
+		const dur = 650;
+		el.classList.add(to < from ? 'hp-dropping' : 'hp-rising');
+		el.textContent = String(from); // preact already wrote `to`; start from the old value
+		const tick = (now: number) => {
+			const t = Math.min(1, (now - start) / dur);
+			const e = 1 - (1 - t) ** 3;
+			el.textContent = String(Math.round(from + (to - from) * e));
+			if (t < 1) {
+				this.hpRaf = requestAnimationFrame(tick);
+			} else {
+				this.hpRaf = null;
+				el.textContent = String(to);
+				el.classList.remove('hp-dropping', 'hp-rising');
+			}
+		};
+		this.hpRaf = requestAnimationFrame(tick);
+	}
+	override componentWillUnmount() {
+		if (this.hpRaf != null) cancelAnimationFrame(this.hpRaf);
+		this.clearHold();
+	}
 	override componentDidUpdate(prev: this['props']) {
+		if (prev.mon && this.props.mon && prev.mon.iid === this.props.mon.iid && prev.mon.hp !== this.props.mon.hp) {
+			this.tweenHp(prev.mon.hp, this.props.mon.hp);
+		}
 		const cur = this.props.pkFx;
 		const was = prev.pkFx;
 		if (!cur?.cls || !this.baseEl) return;
@@ -1725,11 +1757,26 @@ class TcgMon extends preact.Component<{
 		}
 		const pct = mon.maxHp ? Math.max(0, Math.min(100, (mon.hp / mon.maxHp) * 100)) : 0;
 		const hpTone = pct > 50 ? 'ok' : pct > 25 ? 'mid' : 'low';
+		if (mon.faceDown) {
+			return <div
+				ref={el => { this.baseEl = el as HTMLElement | null; }}
+				class={`tcg-mon face-down ${activeSpot ? 'active' : ''} ${foe ? 'foe' : ''} ${pkFx?.cls || ''}`}
+				data-iid={mon.iid}
+				data-drop-slot={String(this.props.slot)}
+				data-drop-foe={foe ? '1' : '0'}
+				data-drop-empty="0"
+				title="Face-down Pokémon"
+				onContextMenu={ev => ev.preventDefault()}
+			>
+				<TcgCardFace cardId="" name="Face-down Pokémon" size={cardSize} back />
+			</div>;
+		}
 		const cls = [
 			'tcg-mon', activeSpot ? 'active' : '', foe ? 'foe' : '',
 			selected ? 'selected' : '', legal ? 'legal' : '',
 			dropOk ? 'drop-ok' : '', dropHot ? 'drop-hot' : '',
 			pkFx?.cls || '',
+			this.props.reveal ? 'fx-reveal' : '',
 		].filter(Boolean).join(' ');
 		return <div
 			ref={el => { this.baseEl = el as HTMLElement | null; }}
@@ -1755,28 +1802,13 @@ class TcgMon extends preact.Component<{
 				onClick={onClick} onInspect={onInspect}
 			/>
 			<div class={`tcg-hp ${hpTone}`} title={`${mon.hp} / ${mon.maxHp || mon.hp} HP`}>
-				<span class="tcg-hp-val">{mon.hp}</span>
+				<span class="tcg-hp-val" ref={el => { this.hpEl = el as HTMLElement | null; }}>{mon.hp}</span>
 				<span class="tcg-hp-track" aria-hidden="true">
-		if (mon.faceDown) {
-			return <div
-				ref={el => { this.baseEl = el as HTMLElement | null; }}
-				class={`tcg-mon face-down ${activeSpot ? 'active' : ''} ${foe ? 'foe' : ''} ${pkFx?.cls || ''}`}
-				data-iid={mon.iid}
-				data-drop-slot={String(this.props.slot)}
-				data-drop-foe={foe ? '1' : '0'}
-				data-drop-empty="0"
-				title="Face-down Pokémon"
-				onContextMenu={ev => ev.preventDefault()}
-			>
-				<TcgCardFace cardId="" name="Face-down Pokémon" size={cardSize} back />
-			</div>;
-		}
 					<span class="tcg-hp-fill" style={{ width: `${pct}%` }}></span>
 				</span>
 			</div>
 			<div class="tcg-energy-row">
 				{(mon.energy || []).map((t, i) => pip(t, i))}
-			this.props.reveal ? 'fx-reveal' : '',
 			</div>
 			{(mon.status || mon.poisoned || mon.burned) &&
 				<div class="tcg-status">{mon.status}{mon.poisoned ? ' PSN' : ''}{mon.burned ? ' BRN' : ''}</div>}
@@ -1882,6 +1914,9 @@ export class TcgBoard extends preact.Component<{
 	/** Mons removed on the latest snapshot, held until their KO (or the next unrelated beat). */
 	freshOut: { [iid: string]: true } = {};
 	lastSnap: TcgSnapshot | null = null;
+	/** Opponent setup placeholders seen face down, and the ones flipping up on this snapshot. */
+	faceDownSeen: { [iid: string]: true } = {};
+	revealing: { [iid: string]: true } = {};
 	/** Pre-draw hand per seat — snapshot already has the new hand when shuffle FX runs. */
 	handMemory: { [seat: number]: { ids: string[] | null, count: number } } = {};
 	/** Events that arrived while a beat was still playing. */
@@ -1914,15 +1949,66 @@ export class TcgBoard extends preact.Component<{
 	override componentDidMount() {
 		this.stashHands(this.props.snapshot);
 		this.playFx(this.props.events);
-	/** Opponent setup placeholders seen face down, and the ones flipping up on this snapshot. */
-	faceDownSeen: { [iid: string]: true } = {};
-	revealing: { [iid: string]: true } = {};
 		window.addEventListener('pointermove', this.onDragMove);
 		window.addEventListener('pointerup', this.onDragEnd);
 		window.addEventListener('pointercancel', this.onDragEnd);
 		window.addEventListener('keydown', this.onKeyDown);
 	}
+	/** Where every on-board Pokémon was before this render (FLIP "first"). */
+	flipRects: { [iid: string]: { left: number, top: number, width: number, height: number } } = {};
+	/** Layout box relative to the table, ignoring any transform mid-animation (lunge, shake, hover). */
+	layoutBox(el: HTMLElement) {
+		let left = 0;
+		let top = 0;
+		let node: HTMLElement | null = el;
+		while (node && node !== this.tableEl) {
+			left += node.offsetLeft;
+			top += node.offsetTop;
+			node = node.offsetParent as HTMLElement | null;
+		}
+		return { left, top, width: el.offsetWidth, height: el.offsetHeight };
+	}
+	override componentWillUpdate() {
+		this.flipRects = {};
+		const root = this.tableEl;
+		if (!root || PS.prefs.noanim) return;
+		root.querySelectorAll<HTMLElement>('.tcg-mon[data-iid]').forEach(el => {
+			const iid = el.dataset.iid;
+			if (iid) this.flipRects[iid] = this.layoutBox(el);
+		});
+	}
+	/** Glide any Pokémon whose slot changed from its old box to the new one (FLIP "last/invert/play"). */
+	flipMoved() {
+		const root = this.tableEl;
+		const first = this.flipRects;
+		this.flipRects = {};
+		if (!root || typeof (root as any).animate !== 'function') return;
+		root.querySelectorAll<HTMLElement>('.tcg-mon[data-iid]').forEach(el => {
+			const iid = el.dataset.iid;
+			const was = iid && first[iid];
+			if (!was) return;
+			// Beats with their own entrance/exit motion keep it.
+			// (A switch-in keeps its glow but glides from its real bench spot instead of the canned offset.)
+			if (/\bfx-(place|ko|reveal|lunge|hit)\b/.test(el.className)) return;
+			const now = this.layoutBox(el);
+			const dx = was.left - now.left;
+			const dy = was.top - now.top;
+			if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
+			const sx = was.width && now.width ? was.width / now.width : 1;
+			const sy = was.height && now.height ? was.height / now.height : 1;
+			el.classList.add('is-flipping');
+			const anim = el.animate([
+				{ transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`, filter: 'drop-shadow(0 10px 10px rgba(0,0,0,0.35))' },
+				{ transform: `translate(${dx * 0.4}px, ${dy * 0.4}px) scale(${1 + (sx - 1) * 0.4}, ${1 + (sy - 1) * 0.4})`, filter: 'drop-shadow(0 14px 14px rgba(0,0,0,0.4))', offset: 0.5 },
+				{ transform: 'translate(0, 0) scale(1, 1)', filter: 'drop-shadow(0 0 0 rgba(0,0,0,0))' },
+			], { duration: 520, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'none' });
+			const done = () => el.classList.remove('is-flipping');
+			anim.onfinish = done;
+			anim.oncancel = done;
+		});
+	}
 	override componentDidUpdate(prev: this['props'], prevState: this['state']) {
+		this.flipMoved();
 		if (this.props.halt !== prev.halt) {
 			this.fxPending = [];
 			this.fxBusy = false;
@@ -1969,7 +2055,22 @@ export class TcgBoard extends preact.Component<{
 					this.freshOut[iid] = true;
 				}
 			});
+			// Setup placeholders that just turned face up get one flip animation.
+			this.revealing = {};
+			Object.keys(this.faceDownSeen).forEach(iid => {
+				const now = findMonView(snap.players, iid);
+				if (now && !now.faceDown) {
+					this.revealing[iid] = true;
+					delete this.faceDownSeen[iid];
+				} else if (!now) {
+					delete this.faceDownSeen[iid];
+				}
+			});
 		}
+		snap.players.forEach(p => {
+			if (p?.active?.faceDown) this.faceDownSeen[p.active.iid] = true;
+			(p?.bench || []).forEach(m => { if (m?.faceDown) this.faceDownSeen[m.iid] = true; });
+		});
 		this.lastSnap = snap;
 	}
 
@@ -2055,22 +2156,7 @@ export class TcgBoard extends preact.Component<{
 				image: mem.image,
 				hp: mem.hp ?? 0,
 				maxHp: mem.maxHp ?? mem.hp ?? 0,
-			// Setup placeholders that just turned face up get one flip animation.
-			this.revealing = {};
-			Object.keys(this.faceDownSeen).forEach(iid => {
-				const now = findMonView(snap.players, iid);
-				if (now && !now.faceDown) {
-					this.revealing[iid] = true;
-					delete this.faceDownSeen[iid];
-				} else if (!now) {
-					delete this.faceDownSeen[iid];
-				}
-			});
 			};
-		snap.players.forEach(p => {
-			if (p?.active?.faceDown) this.faceDownSeen[p.active.iid] = true;
-			(p?.bench || []).forEach(m => { if (m?.faceDown) this.faceDownSeen[m.iid] = true; });
-		});
 		});
 		return held;
 	}
@@ -2855,6 +2941,7 @@ export class TcgBoard extends preact.Component<{
 								const ghost = !mon && !!shown;
 								return <TcgMon
 									key={`fb${i}`} mon={shown} slot={i} foe size="sm"
+									reveal={!!shown && !!this.revealing[shown.iid]}
 									legal={!ghost && this.slotActionable(i, true)}
 									{...this.slotDropMeta(i, true, !mon)}
 									{...monFx(shown)}
@@ -2865,6 +2952,7 @@ export class TcgBoard extends preact.Component<{
 						<div class="tcg-zone tcg-active-spot foe">
 							<TcgMon
 								mon={foeActive} slot="active" activeSpot foe size="lg"
+								reveal={!!foeActive && !!this.revealing[foeActive.iid]}
 								legal={!foe.active && foeActive ? false : this.slotActionable('active', true)}
 								{...this.slotDropMeta('active', true, !foe.active)}
 								{...monFx(foeActive)}
@@ -2941,7 +3029,6 @@ export class TcgBoard extends preact.Component<{
 								>
 									<span
 										class="tcg-ezone-now"
-									reveal={!!shown && !!this.revealing[shown.iid]}
 										style={{ background: TYPE_COLOR[zone?.type || 'colorless'] || '#888' }}
 									></span>
 									{zone?.next && <span
@@ -2952,10 +3039,10 @@ export class TcgBoard extends preact.Component<{
 							</>}
 					</div>
 					<div class="tcg-field">
-								reveal={!!foeActive && !!this.revealing[foeActive.iid]}
 						<div class="tcg-zone tcg-active-spot me">
 							<TcgMon
 								mon={meActive} slot="active" activeSpot size="lg"
+								reveal={!!meActive && !!this.revealing[meActive.iid]}
 								legal={!me.active && meActive ? false : this.slotActionable('active')}
 								{...this.slotDropMeta('active', false, !me.active)}
 								{...monFx(meActive)}
@@ -2970,6 +3057,7 @@ export class TcgBoard extends preact.Component<{
 								const ghost = !mon && !!shown;
 								return <TcgMon
 									key={`mb${i}`} mon={shown} slot={i} size="sm"
+									reveal={!!shown && !!this.revealing[shown.iid]}
 									legal={!ghost && this.slotActionable(i)}
 									{...this.slotDropMeta(i, false, !mon)}
 									{...monFx(shown)}
@@ -3032,8 +3120,12 @@ export class TcgBoard extends preact.Component<{
 						)
 				) : myHand ? myHand.map((id, i) => {
 					const playable = allActs.some(a => actionTouchesHand(a, i));
+					// Key by "nth copy of this card", not by index, so playing one card lets the
+					// rest glide over instead of remounting every card to its right.
+					let nth = 0;
+					for (let j = 0; j < i; j++) if (myHand[j] === id) nth++;
 					return <TcgCardFace
-						key={`${id}-${i}`} cardId={id} size="md"
+						key={`${id}#${nth}`} cardId={id} size="md"
 						pocket={pocket}
 						selected={this.state.selectedHand === i}
 						playable={playable}
@@ -3042,7 +3134,6 @@ export class TcgBoard extends preact.Component<{
 						onPointerDown={playable ? (ev: any) => this.startHandDrag(i, id, ev) : undefined}
 						onHold={this.onCardHold}
 						onInspect={this.openInspect}
-								reveal={!!meActive && !!this.revealing[meActive.iid]}
 					/>;
 				}) : Array.from({ length: pileCount(me.hand) }, (_, i) =>
 					<TcgCardFace key={i} back size="md" />
@@ -3057,7 +3148,6 @@ export class TcgBoard extends preact.Component<{
 					<i class={`fa fa-${this.props.paused ? 'play' : 'pause'}`} aria-hidden></i> {this.props.paused ? 'Play' : 'Pause'}
 				</button>
 				<button type="button" class="button" onClick={this.props.onReplay}>
-									reveal={!!shown && !!this.revealing[shown.iid]}
 					<i class="fa fa-undo" aria-hidden></i> Replay
 				</button>
 				<button type="button" class="button" onClick={this.props.onSkip}>
