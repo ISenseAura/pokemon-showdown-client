@@ -1899,6 +1899,16 @@ export class TcgBoard extends preact.Component<{
 		koHide: {} as { [iid: string]: true },
 		/** Incoming Pokémon shown in its destination slot during a place / switch-in beat. */
 		placeIn: null as { seat: number, slot: TcgSlot, mon: TcgPokemonView } | null,
+		/**
+		 * Effects of beats that have already played in this batch, applied on top of the
+		 * pre-batch snapshot so the board reacts at the beat instead of at commit:
+		 * cards leave your hand as they are played, HP drops with each hit, energy lands.
+		 */
+		live: { hand: {}, hp: {}, energy: {} } as {
+			hand: { [cardId: string]: number },
+			hp: { [iid: string]: number },
+			energy: { [iid: string]: string[] },
+		},
 		inspect: null as Preview | null,
 		menuSlot: null as TcgSlot | null,
 		endTurnConfirm: false,
@@ -2044,7 +2054,41 @@ export class TcgBoard extends preact.Component<{
 
 	clearFx() {
 		if (this.state.fx?.kind === 'ko' && this.state.fx.iid) delete this.freshOut[this.state.fx.iid];
-		this.setState({ fx: null, pkFx: {}, koGhost: null, koHide: {}, placeIn: null });
+		this.setState({ fx: null, pkFx: {}, koGhost: null, koHide: {}, placeIn: null, live: { hand: {}, hp: {}, energy: {} } });
+	}
+
+	/** Fold a beat that is now playing into the live overlay (see state.live). */
+	applyLive(fx: FxBeat, you: number | null | undefined) {
+		const live = {
+			hand: { ...this.state.live.hand },
+			hp: { ...this.state.live.hp },
+			energy: { ...this.state.live.energy },
+		};
+		const oldPlayers = this.props.snapshot.players;
+		const finalPlayers = this.props.fxSnapshot?.players || oldPlayers;
+		const fromHand = fx.kind === 'energy' || fx.kind === 'tool' || fx.kind === 'trainer' ||
+			fx.kind === 'stadium' || fx.kind === 'evolve' || (fx.kind === 'place' && !fx.fromBench);
+		// Attach events carry the target Pokémon, not always the seat; the owner of the target played it.
+		const seat = fx.seat ?? (fx.iid ? findMonSlot(oldPlayers, fx.iid)?.seat : undefined);
+		if (fromHand && fx.cardId && actorIsYou(seat, you)) {
+			live.hand[fx.cardId] = (live.hand[fx.cardId] || 0) + 1;
+		}
+		const hits = fx.hits?.length ? fx.hits : (fx.kind === 'damage' || fx.kind === 'heal') && fx.iid ?
+			[{ iid: fx.iid, amount: fx.amount, kind: fx.kind }] : [];
+		hits.forEach(h => {
+			if (h.kind !== 'damage' && h.kind !== 'heal') return;
+			const mon = findMonView(oldPlayers, h.iid);
+			if (!mon || !h.amount) return;
+			const cur = live.hp[h.iid] ?? mon.hp;
+			live.hp[h.iid] = h.kind === 'damage' ?
+				Math.max(0, cur - h.amount) :
+				Math.min(mon.maxHp || cur + h.amount, cur + h.amount);
+		});
+		if ((fx.kind === 'energy' || fx.kind === 'tool') && fx.iid) {
+			const after = findMonView(finalPlayers, fx.iid);
+			if (after?.energy) live.energy[fx.iid] = after.energy;
+		}
+		return live;
 	}
 
 	noteRemovals(snap: TcgSnapshot) {
@@ -2125,7 +2169,12 @@ export class TcgBoard extends preact.Component<{
 		// Keep the real card through the KO. Swapping it for a copy made it vanish and pop back.
 		if (live && this.state.koHide[live.iid]) return null;
 		if (live && placed && live.iid === placed.mon.iid) return null;
-		if (live) return live;
+		if (live) {
+			const hp = this.state.live.hp[live.iid];
+			const energy = this.state.live.energy[live.iid];
+			if (hp == null && !energy) return live;
+			return { ...live, hp: hp ?? live.hp, energy: energy || live.energy };
+		}
 		const g = this.state.koGhost;
 		if (g && g.seat === seat && sameSlot(g.slot, slot)) {
 			return {
@@ -2264,7 +2313,7 @@ export class TcgBoard extends preact.Component<{
 				fx.fromBench = !!(fromOld && fromOld.slot !== 'active' && slot === 'active');
 				if (incoming) placeIn = { seat, slot, mon: incoming };
 			}
-			this.setState({ fx, pkFx: buildPkFx(fx, fxTick), koGhost, koHide, placeIn });
+			this.setState({ fx, pkFx: buildPkFx(fx, fxTick), koGhost, koHide, placeIn, live: this.applyLive(fx, you) });
 		};
 
 		const step = () => {
@@ -2740,7 +2789,16 @@ export class TcgBoard extends preact.Component<{
 			return <div class="tcg-table"><p class="tcg-waiting">Waiting for TCG snapshot…</p></div>;
 		}
 		const benchSize = snap.format?.benchSize || Math.max(me.bench.length, foe.bench.length, 3);
-		const myHand = handIds(me.hand);
+		const myHandAll = handIds(me.hand);
+		// Cards whose play beat has already run leave the fan now, not when the batch commits.
+		const spent = { ...this.state.live.hand };
+		const myHand = myHandAll && myHandAll
+			.map((id, i) => ({ id, i }))
+			.filter(c => {
+				if (!spent[c.id]) return true;
+				spent[c.id]--;
+				return false;
+			});
 		const shuffleFx = this.state.fx?.kind === 'shuffleHand' ? this.state.fx : null;
 		const shufflingMine = !!(shuffleFx && actorIsYou(shuffleFx.seat, snap.you));
 		const shufflingFoe = !!(shuffleFx && !actorIsYou(shuffleFx.seat, snap.you));
@@ -3118,19 +3176,19 @@ export class TcgBoard extends preact.Component<{
 								fanIndex={i} fanCount={shuffleHandCount}
 							/>
 						)
-				) : myHand ? myHand.map((id, i) => {
+				) : myHand ? myHand.map(({ id, i }, fan) => {
 					const playable = allActs.some(a => actionTouchesHand(a, i));
 					// Key by "nth copy of this card", not by index, so playing one card lets the
 					// rest glide over instead of remounting every card to its right.
 					let nth = 0;
-					for (let j = 0; j < i; j++) if (myHand[j] === id) nth++;
+					for (let j = 0; j < fan; j++) if (myHand[j].id === id) nth++;
 					return <TcgCardFace
 						key={`${id}#${nth}`} cardId={id} size="md"
 						pocket={pocket}
 						selected={this.state.selectedHand === i}
 						playable={playable}
 						dragging={drag?.source === 'hand' && drag.hand === i && dragging}
-						fanIndex={i} fanCount={myHand.length}
+						fanIndex={fan} fanCount={myHand.length}
 						onPointerDown={playable ? (ev: any) => this.startHandDrag(i, id, ev) : undefined}
 						onHold={this.onCardHold}
 						onInspect={this.openInspect}
