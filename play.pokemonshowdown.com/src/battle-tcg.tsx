@@ -63,7 +63,7 @@ export interface TcgSnapshot {
 	you?: number | null;
 	actions: TcgAction[];
 	players: TcgPlayerView[];
-	format?: { benchSize?: number, energyZone?: boolean, prizes?: number, name?: string };
+	format?: { id?: string, benchSize?: number, energyZone?: boolean, prizes?: number, name?: string };
 	pendingSearch?: { kind?: string, left?: number, upTo?: boolean, zone?: string, dest?: string };
 	pendingDiscard?: { need: number };
 	pendingRetreatPay?: { need: number };

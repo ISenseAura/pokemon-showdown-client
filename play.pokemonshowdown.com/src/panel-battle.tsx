@@ -164,6 +164,11 @@ export class BattleRoom extends ChatRoom {
 	overlayActive: 'move' | 'switch' | null = null;
 	tcgMode = isTcgBattleId(this.id);
 	tcgSnapshot: TcgSnapshot | null = null;
+	/**
+	 * Format rules arrive once on the first snapshot of a battle (server omits them afterward).
+	 * Merged into every later snapshot so the board always has prizes/bench/energyZone.
+	 */
+	tcgFormat: TcgSnapshot['format'] = undefined;
 	/** Snapshot for the beat currently animating. The board keeps the previous one until that beat ends. */
 	tcgFxSnapshot: TcgSnapshot | null = null;
 	tcgEvents: TcgEvent[] = [];
@@ -471,6 +476,7 @@ export class BattleRoom extends ChatRoom {
 		this.tcgReplayMode = true;
 		this.tcgEnded = true;
 		this.tcgSide = null;
+		this.tcgFormat = replay.snapshot.format;
 		this.tcgWinner = data.winner || null;
 		this.tcgP1 = { id: toID(data.p1 || ''), name: data.p1 || 'Player 1' };
 		this.tcgP2 = { id: toID(data.p2 || ''), name: data.p2 || 'Player 2' };
@@ -589,6 +595,8 @@ export class BattleRoom extends ChatRoom {
 	/** Apply the board for one payload. Logs were already written beat-by-beat when `paced` is set. */
 	commitTcg(item: BattleRoom['tcgQueue'][number], paced: boolean) {
 		if (item.snapshot) {
+			if (item.snapshot.format) this.tcgFormat = item.snapshot.format;
+			else if (this.tcgFormat) item.snapshot = { ...item.snapshot, format: this.tcgFormat };
 			this.tcgSnapshot = item.snapshot;
 			if (item.snapshot.status === 'over') {
 				this.tcgEnded = true;
@@ -1178,6 +1186,10 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		if (!data) return;
 		if (data.kind === 'watch' && room.tcgSnapshot?.you != null) {
 			return;
+		}
+		if (data.snapshot) {
+			if (data.snapshot.format) room.tcgFormat = data.snapshot.format;
+			else if (room.tcgFormat) data.snapshot = { ...data.snapshot, format: room.tcgFormat };
 		}
 		if (data.snapshot && !data.snapshot.format?.energyZone &&
 			!data.snapshot.players?.some(p => p?.energyZone)) {
