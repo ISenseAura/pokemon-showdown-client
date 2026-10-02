@@ -9,6 +9,7 @@ import { PS, type Team } from "./client-main";
 import { PSIcon, PSPanelWrapper, PSRoomPanel } from "./panels";
 import { Dex, toID, type ID } from "./battle-dex";
 import { Teams } from "./battle-teams";
+import { deckCounts, getTcgCard, isTcgFormatId, isTcgPacked, loadTcgCardIndex, unpackTcgDeck } from "./battle-tcg-deck";
 
 export class PSTeambuilder {
 	static exportPackedTeam(team: Team) {
@@ -156,15 +157,43 @@ export function TeamBox(props: {
 	const team = props.team;
 	let contents;
 	if (team) {
-		team.iconCache ||= team.packedTeam ? (
-			Teams.unpackSpeciesOnly(team.packedTeam).map(
-				// can't use <PSIcon>, weird interaction with iconCache
-				// don't try this at home; I'm a trained professional
-				pokemon => PSIcon({ pokemon })
-			)
-		) : (
-			<em>(empty {team.isBox ? 'box' : 'team'})</em>
-		);
+		if (isTcgFormatId(team.format) || isTcgPacked(team.packedTeam)) {
+			if (!team.iconCache) {
+				const ids = unpackTcgDeck(team.packedTeam);
+				if (!ids.length) {
+					team.iconCache = <em>(empty deck)</em>;
+				} else {
+					const indexReady = !!getTcgCard(ids[0]) || ids.every(id => !id);
+					if (!indexReady) {
+						void loadTcgCardIndex().then(() => {
+							team.iconCache = null;
+							PS.rooms.teambuilder?.update(null);
+						});
+					}
+					const counts = deckCounts(ids);
+					const sample = ids.slice(0, 6).map(id => {
+						const c = getTcgCard(id);
+						return c?.i ?
+							<img src={c.i} alt={c.n} width={28} height={40} style="border-radius:2px;margin-right:2px" /> :
+							<span class="picon" style="margin-right:2px">{c?.n || id}</span>;
+					});
+					team.iconCache = <>
+						{sample}
+						<small style="margin-left:4px">{counts.total} cards · P{counts.pokemon} T{counts.trainer} E{counts.energy}</small>
+					</>;
+				}
+			}
+		} else {
+			team.iconCache ||= team.packedTeam ? (
+				Teams.unpackSpeciesOnly(team.packedTeam).map(
+					// can't use <PSIcon>, weird interaction with iconCache
+					// don't try this at home; I'm a trained professional
+					pokemon => PSIcon({ pokemon })
+				)
+			) : (
+				<em>(empty {team.isBox ? 'box' : 'deck'})</em>
+			);
+		}
 		let format = team.format as string;
 		if (format.startsWith(Dex.modid)) format = format.slice(4);
 		format = (format ? `[${format}] ` : ``) + (team.folder ? `${team.folder}/` : ``);
@@ -174,7 +203,7 @@ export function TeamBox(props: {
 		];
 	} else {
 		contents = [
-			<em>Select a team</em>,
+			<em>Select a deck</em>,
 		];
 	}
 	const className = `team${team?.isBox ? ' pc-box' : ''}`;
@@ -340,7 +369,7 @@ class TeamDropdownPanel extends PSRoomPanel {
 				</h2>);
 			} else {
 				teamList.push(<h2>
-					<i class="fa fa-folder-open-o" aria-hidden></i> Teams not in any folders
+					<i class="fa fa-folder-open-o" aria-hidden></i> Decks not in any folders
 				</h2>);
 			}
 			teamList.push(<ul class="teamdropdown" onClick={this.click}>
@@ -353,7 +382,7 @@ class TeamDropdownPanel extends PSRoomPanel {
 
 		return <PSPanelWrapper room={room} width={width}><div class="pad">
 			{teamList}
-			{isEmpty && <p><em>No teams found</em></p>}
+			{isEmpty && <p><em>No decks found</em></p>}
 		</div></PSPanelWrapper>;
 	}
 }

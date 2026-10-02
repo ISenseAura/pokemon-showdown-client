@@ -505,6 +505,9 @@ export class MainMenuRoom extends PSRoom {
 				}
 			}
 			break;
+		case 'tcgvalidate':
+			if (typeof receiveTcgValidate === 'function') receiveTcgValidate(response);
+			break;
 		}
 		for (const callback of this.listeners[fullid] || []) callback(response);
 		delete this.listeners[fullid];
@@ -756,7 +759,7 @@ class MainMenuPanel extends PSRoomPanel<MainMenuRoom> {
 					{this.renderSearchButton()}
 
 					<div class="menugroup">
-						<p><a class="mainmenu2 mainmenu button" href="teambuilder">Teambuilder</a></p>
+						<p><a class="mainmenu2 mainmenu button" href="teambuilder">Decks</a></p>
 						<p><a class={"mainmenu3 mainmenu" + onlineButton} href="ladder">Ladder</a></p>
 						<p><a class={"mainmenu4 mainmenu" + onlineButton} href="view-tournaments-all">Tournaments</a></p>
 					</div>
@@ -976,8 +979,10 @@ export class TeamForm extends preact.Component<{
 		const teamElement = this.base!.querySelector<HTMLButtonElement>('button[name=team]');
 		const teamKey = teamElement!.value;
 		const team = teamKey ? PS.teams.byKey[teamKey] : undefined;
-		if (!window.BattleFormats[teambuilderFormat]?.team && !team) {
-			PS.alert('You need to go into the Teambuilder and build a team for this format.', {
+		const formatIsTcg = toID(teambuilderFormat).replace(/^gen\d/, '').startsWith('tcg');
+		// TCG constructed formats accept an empty deck (server assigns a sample).
+		if (!window.BattleFormats[teambuilderFormat]?.team && !team && !formatIsTcg) {
+			PS.alert('You need to go into Decks and build a deck for this format.', {
 				parentElem: teamElement!,
 			});
 			return;
@@ -1067,7 +1072,7 @@ export class TeamForm extends preact.Component<{
 			</p>}
 			<p>
 				<label class="label">
-					Team:<br />
+					Deck:<br />
 					<TeamDropdown format={this.props.teamFormat || this.format} />
 				</label>
 			</p>
