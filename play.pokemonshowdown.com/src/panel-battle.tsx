@@ -526,6 +526,9 @@ export class BattleRoom extends ChatRoom {
 			}
 		}
 		if (!item.replay) {
+			// The backlog arrives only once we're logged in, which can be well after the room was
+			// built; measure the catch-up window from the first payload so a rejoin never animates.
+			if (!this.tcgHistory.length) this.tcgSyncUntil = Math.max(this.tcgSyncUntil, Date.now() + 2500);
 			this.tcgHistory.push({
 				...item,
 				events: item.events?.slice(),
@@ -536,8 +539,14 @@ export class BattleRoom extends ChatRoom {
 			// Catch-up burst after rejoining a game in progress: write the log, jump the board, no beats.
 			// A fresh game is still in setup here, so its opening beats keep animating.
 			item.animate = false;
-			if (this.tcgPlaying) this.tcgQueue.push(item);
-			else this.commitTcg(item, false);
+			if (this.tcgPlaying || this.tcgQueue.length) {
+				// The opening beats of the backlog started animating before we knew this was a
+				// rejoin; drop them and jump straight to the newest board.
+				this.tcgQueue.push(item);
+				this.skipTcgToEnd();
+			} else {
+				this.commitTcg(item, false);
+			}
 			return;
 		}
 		// A request must not paint the resulting board while an earlier beat is still playing.
@@ -2080,7 +2089,9 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		const atStart = room.tcgSeekIndex === 0 ||
 			(room.tcgSeekIndex < 0 && room.tcgHistory.length <= 1 && !room.tcgQueue.length);
 		const canScrub = ended || (isSpec && !ended);
-		const showTimer = isPlayer && !ended;
+		// The server drops the game (and its timer) as soon as the match ends, while the client
+		// is still animating the final beats; hide Timer from the latest server status, not the FX one.
+		const showTimer = isPlayer && !ended && room.tcgLatestStatus !== 'over';
 		const showSpecLive = !ended && isSpec;
 		const showScrub = ended && canScrub;
 		const showEndPlayer = ended && isPlayer && !room.tcgReplayMode;
@@ -2088,8 +2099,10 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		if (!showTimer && !showSpecLive && !showScrub && !showEndPlayer && !showEndSpec) return null;
 
 		const mode = ended ? 'ended' : showSpecLive ? 'spec' : 'live';
+		// Viewing an earlier turn: the result banner is hidden, so centre the bar in the mid-board gap.
+		const scrubbing = ended && room.tcgSnapshot?.status !== 'over';
 		return <div
-			class={`tcg-chrome ${mode}`}
+			class={`tcg-chrome ${mode}${scrubbing ? ' scrubbing' : ''}`}
 			role="complementary"
 			aria-label="TCG Battle Controls"
 		>

@@ -236,8 +236,10 @@ function cardName(players: TcgPlayerView[] | undefined, cardId?: string, iid?: s
 	if (cardId && seenCardNames.get(cardId)) return seenCardNames.get(cardId)!;
 	return printedName(cardId);
 }
+/** Printed card name when the index knows it; falls back to the raw id so nothing is blank. */
 function cardLabel(id?: string): string {
-	return id || 'a card';
+	if (!id) return 'a card';
+	return seenCardNames.get(id) || printedName(id) || id;
 }
 function statusWord(s: string | null | undefined): string {
 	const t = String(s || '').toLowerCase();
@@ -1465,8 +1467,16 @@ function sameDrop(a: DropTarget | null, b: DropTarget | null): boolean {
 	return true;
 }
 
-function scoredPoints(p: TcgPlayerView, need: number): number {
-	return Math.max(0, need - pileCount(p.prizes));
+/**
+ * Prize cards still face down. The opening replay snapshot is taken before prizes are set
+ * out (count 0), so during setup report the full set rather than "all taken".
+ */
+function prizesLeft(p: TcgPlayerView, need: number, status?: string): number {
+	const n = pileCount(p.prizes);
+	return status === 'setup' && !n ? need : n;
+}
+function scoredPoints(p: TcgPlayerView, need: number, status?: string): number {
+	return Math.max(0, need - prizesLeft(p, need, status));
 }
 
 function pip(type: string, key?: string | number) {
@@ -1663,6 +1673,7 @@ class TcgCardFace extends preact.Component<{
 			dragging ? 'tcg-card-dragging' : '',
 			fanCount ? 'tcg-card-fan' : '',
 		].filter(Boolean).join(' ');
+		const label = name || (cardId ? cardLabel(cardId) : '');
 		const mid = fanCount ? (fanCount - 1) / 2 : 0;
 		const style = fanCount != null && fanIndex != null ? {
 			'--fan': String(fanIndex - mid),
@@ -1676,12 +1687,12 @@ class TcgCardFace extends preact.Component<{
 			onPointerCancel={this.onPointerUp}
 			onPointerMove={this.onPointerMove}
 			onContextMenu={onInspect ? this.inspect : ev => ev.preventDefault()}
-			title={name || cardId || ''} aria-pressed={selected}
+			title={label} aria-pressed={selected}
 		>
 			<span class="tcg-card-inner">
 				{back || !src ?
 					<CardBackFace /> :
-					<img src={src} alt={name || cardId || ''} draggable={false} onError={this.onImgError} />}
+					<img src={src} alt={label} draggable={false} onError={this.onImgError} />}
 			</span>
 		</button>;
 	}
@@ -3067,7 +3078,8 @@ export class TcgBoard extends preact.Component<{
 			}
 		}
 		// Same node from the ending beat through the result, so the fade-in does not replay.
-		const showWinBanner = st.fx?.kind === 'over' || (!!this.props.ended && !st.fx);
+		// Hidden while scrubbing/replaying an earlier turn so the board at that turn is readable.
+		const showWinBanner = st.fx?.kind === 'over' || (!!this.props.ended && !st.fx && !replaying);
 
 		const tableClass = [
 			'tcg-table', pocket ? 'pocket' : 'live',
@@ -3150,8 +3162,8 @@ export class TcgBoard extends preact.Component<{
 				<section class="tcg-half foe">
 					<div class="tcg-side left">
 						{!pocket ?
-							<TcgPrizeRail remaining={pileCount(foe.prizes)} max={need} foe /> :
-							<TcgPoints scored={scoredPoints(foe, need)} need={need} pocket />}
+							<TcgPrizeRail remaining={prizesLeft(foe, need, snap.status)} max={need} foe /> :
+							<TcgPoints scored={scoredPoints(foe, need, snap.status)} need={need} pocket />}
 					</div>
 					<div class="tcg-field">
 						<div class="tcg-zone tcg-bench foe">
@@ -3235,11 +3247,11 @@ export class TcgBoard extends preact.Component<{
 					<div class="tcg-side left">
 						{!pocket ?
 							<TcgPrizeRail
-								remaining={pileCount(me.prizes)} max={need}
+								remaining={prizesLeft(me, need, snap.status)} max={need}
 								takeActs={prizes} onTake={a => this.choose(a)}
 							/> :
 							<>
-								<TcgPoints scored={scoredPoints(me, need)} need={need} pocket />
+								<TcgPoints scored={scoredPoints(me, need, snap.status)} need={need} pocket />
 								{(zone || pocket) && <button
 									type="button"
 									class={`tcg-ezone ${canAttach ? 'ready' : 'off'} ${this.state.energyPick ? 'pick' : ''} ${drag?.source === 'zone' && dragging ? 'dragging' : ''}`}
