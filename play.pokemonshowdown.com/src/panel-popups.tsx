@@ -9,6 +9,7 @@ import {
 	type TimestampOptions, type BattleLayoutPreference,
 } from "./client-main";
 import { type BattleRoom } from "./panel-battle";
+import { isTcgBattleId } from "./battle-tcg";
 import { ChatUserList, PSTextarea, type ChatRoom } from "./panel-chat";
 import { PSRoomPanel, PSPanelWrapper, PSView } from "./panels";
 import { PSHeader } from "./panel-topbar";
@@ -1645,8 +1646,149 @@ class BattleOptionsPanel extends PSRoomPanel {
 		const battleRoom = this.props.room.getParent() as BattleRoom | null;
 		return battleRoom?.battle ? battleRoom : null;
 	}
+	/** Parent room when this popup was opened from a TCG battle. */
+	tcgParent() {
+		const parent = this.props.room.getParent() as BattleRoom | null;
+		if (!parent) return null;
+		if (parent.tcgMode || isTcgBattleId(parent.id)) return parent;
+		return null;
+	}
+	/**
+	 * This client’s battle menu is the TCG one, including from the main menu.
+	 * A Pokémon battle that still has a Battle object keeps the old menu.
+	 */
+	optionsAreTcg() {
+		const parent = this.props.room.getParent() as BattleRoom | null;
+		if (parent?.battle && !parent.tcgMode && !isTcgBattleId(parent.id)) return false;
+		return true;
+	}
+	handleTcgSetting = (ev: Event) => {
+		const input = ev.currentTarget as HTMLInputElement;
+		const value = input.checked;
+		switch (input.name) {
+		case 'noanim':
+			PS.prefs.set('noanim', value);
+			break;
+		case 'tcgskipendturn':
+			PS.prefs.set('tcgskipendturn', value);
+			break;
+		case 'ignorespects':
+			PS.prefs.set('ignorespects', value);
+			this.applySpectatorFilter(value);
+			break;
+		default:
+			this.handleAllSettings(ev);
+		}
+	};
+	applySpectatorFilter(on: boolean) {
+		const parent = this.tcgParent();
+		parent?.add(`||Spectators ${on ? '' : 'no longer '}ignored.`);
+		const root = parent?.parentElem || document;
+		const chats = root.querySelectorAll<HTMLElement>('.battle-log .chat');
+		const display = on ? 'none' : '';
+		for (const chat of chats) {
+			const small = chat.querySelector('small');
+			if (!small) continue;
+			const text = small.innerText;
+			const isPlayerChat = text.includes('\u2606') || text.includes('\u2605');
+			if (!isPlayerChat) chat.style.display = display;
+		}
+	}
+	handleTcgLayout = (ev: Event) => {
+		const value = (ev.currentTarget as HTMLSelectElement).value as typeof PS.prefs.battlelayout;
+		PS.prefs.set('battlelayout', value || null);
+		PS.update();
+	};
+
+	renderTcgOptions() {
+		const room = this.props.room;
+		const tcg = this.tcgParent();
+		const playing = !!tcg?.isPlaying();
+		const rawLayout = PS.prefs.battlelayout || '';
+		const tcgLayout = rawLayout.startsWith('top-and-bottom') ? 'top-and-bottom' :
+			rawLayout.startsWith('side-by-side') ? 'side-by-side' : '';
+		let automatic = 'side by side';
+		if (tcg?.width) {
+			const { layout } = PS.chooseBattleLayout(tcg.width, tcg.height);
+			automatic = layout === 'top-and-bottom' ? 'board above the log' : 'side by side';
+		}
+		return <PSPanelWrapper room={room} width={400}><div class="pad">
+			{tcg && <>
+				<p><strong>In this battle</strong></p>
+				<p class="buttonbar">
+					<button data-cmd="/closeand /inopener /forfeit" class="button" disabled={!playing}>
+						Forfeit
+					</button>
+				</p>
+			</>}
+			<p><strong>Play</strong></p>
+			<p>
+				<label class="checkbox">
+					<input
+						name="tcgskipendturn" checked={!!PS.prefs.tcgskipendturn}
+						type="checkbox" onChange={this.handleTcgSetting}
+					/> Skip the end turn confirmation
+				</label>
+			</p>
+			<p class="tcg-opt-note">
+				End Turn sends immediately, even when you can still play a card, attack, or retreat.
+			</p>
+			<p>
+				<label class="checkbox">
+					<input
+						name="noanim" checked={!!PS.prefs.noanim}
+						type="checkbox" onChange={this.handleTcgSetting}
+					/> Skip animations
+				</label>
+			</p>
+			<p class="tcg-opt-note">
+				The board updates as soon as each action resolves.
+			</p>
+			<p><strong>Layout</strong></p>
+			<p>
+				<label class="optlabel">Board and log: <select
+					name="battlelayout" class="select" onChange={this.handleTcgLayout}
+					value={tcgLayout}
+				>
+					<option value="">Automatic ({automatic})</option>
+					<option value="side-by-side">Side by side</option>
+					<option value="top-and-bottom">Board above the log</option>
+				</select></label>
+			</p>
+			{!PS.prefs.onepanel && window.innerWidth >= 800 && <p>
+				<label class="checkbox">
+					<input
+						name="rightpanel" checked={!!PS.prefs.rightpanelbattles}
+						type="checkbox" onChange={this.handleTcgSetting}
+					/> Open new battles on the right
+				</label>
+			</p>}
+			<p><strong>Room</strong></p>
+			<p>
+				<label class="checkbox">
+					<input
+						name="disallowspectators" checked={!!PS.prefs.disallowspectators}
+						type="checkbox" onChange={this.handleTcgSetting}
+					/> <abbr title="You can still invite someone with the battle URL or /invite">Invite only</abbr>
+				</label>
+			</p>
+			<p>
+				<label class="checkbox">
+					<input
+						name="ignorespects" checked={!!PS.prefs.ignorespects}
+						type="checkbox" onChange={this.handleTcgSetting}
+					/> Ignore spectators
+				</label>
+			</p>
+			<p class="buttonbar">
+				<button data-cmd="/close" class="button">Done</button> {}
+			</p>
+		</div>
+		</PSPanelWrapper>;
+	}
 
 	override render() {
+		if (this.optionsAreTcg()) return this.renderTcgOptions();
 		const room = this.props.room;
 		const battleRoom = this.getBattleRoom();
 		const isPlaying = !!battleRoom?.isPlaying();

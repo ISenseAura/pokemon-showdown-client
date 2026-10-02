@@ -172,7 +172,8 @@ export class BattleLog {
 				message = args[2];
 			}
 			let rank = name.charAt(0);
-			if (battle?.ignoreSpects && ' +'.includes(rank)) return;
+			const ignoreSpects = battle ? !!battle.ignoreSpects : !!window.PS?.prefs?.ignorespects;
+			if (ignoreSpects && ' +'.includes(rank)) return;
 			if (battle?.ignoreOpponent) {
 				if (
 					'\u2605\u2606'.includes(rank) &&
@@ -194,7 +195,8 @@ export class BattleLog {
 
 		case 'join': case 'j': case 'leave': case 'l': {
 			const user = BattleTextParser.parseNameParts(args[1]);
-			if (battle?.ignoreSpects && ' +'.includes(user.group)) return;
+			const ignoreSpects = battle ? !!battle.ignoreSpects : !!window.PS?.prefs?.ignorespects;
+			if (ignoreSpects && ' +'.includes(user.group)) return;
 			const formattedUser = user.group + user.name;
 			const isJoin = (args[0].startsWith('j'));
 			if (!this.joinLeave) {

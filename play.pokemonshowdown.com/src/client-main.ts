@@ -138,6 +138,8 @@ class PSPrefs extends PSStreamModel<string | null> {
 	rightpanelbattles: boolean | null = null;
 	disallowspectators: boolean | null = null;
 	starredformats: { [formatid: string]: true | undefined } | null = null;
+	/** End Turn sends immediately, even when other actions are still legal. */
+	tcgskipendturn: boolean | null = null;
 
 	/* Teambuilder preferences */
 	teameditorspacious: boolean | null = null;
