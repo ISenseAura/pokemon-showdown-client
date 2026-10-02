@@ -385,6 +385,11 @@ export class BattleRoom extends ChatRoom {
 		this.tcgSeekIndex = idx;
 		this.replayTcgSeek(idx, false);
 	}
+	/** Drop the log so a replay can write each line again as its beat plays. */
+	clearTcgLog() {
+		this.tcgLastSeq = 0;
+		this.log?.reset();
+	}
 	/** Paint history through `throughIndex` instantly (for scrubbing). */
 	replayTcgSeek(throughIndex: number, animate: boolean) {
 		this.tcgPaused = !animate;
@@ -395,6 +400,8 @@ export class BattleRoom extends ChatRoom {
 		this.tcgEvents = [];
 		this.tcgWait = true;
 		this.tcgQueue = [];
+		// The live game already logged every line, and seq dedup would skip them on a second pass.
+		this.clearTcgLog();
 		let seen = 0;
 		const slice = this.tcgHistory.slice(0, throughIndex + 1);
 		if (!animate) {
@@ -622,7 +629,9 @@ export class BattleRoom extends ChatRoom {
 		if (item.wait != null) this.tcgWait = item.wait;
 		else if (item.actions) this.tcgWait = !item.actions.length;
 		else if (this.tcgSnapshot) this.tcgWait = !this.tcgSnapshot.actions?.length;
-		if (!paced && !item.silent && item.events?.length) {
+		// A playing replay writes each line from onTcgEvent, when that beat starts.
+		// An instant seek has no beats, so the lines through this point are written here.
+		if (!paced && item.events?.length && (!item.silent || item.replay)) {
 			for (const ev of item.events) this.revealTcgEvent(ev);
 		}
 		this.tcgFxSnapshot = null;
@@ -1228,7 +1237,9 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 	}, skipFx = false) {
 		const room = this.props.room;
 		if (!data) return;
-		if (data.kind === 'watch' && room.tcgSnapshot?.you != null) {
+		// A seated player already has a private `you` payload. A later public watch
+		// has no actions and would wipe choose-first (and every other choice).
+		if (data.kind === 'watch' && (room.tcgSide != null || room.tcgSnapshot?.you != null)) {
 			return;
 		}
 		if (data.snapshot) {
@@ -1254,10 +1265,6 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 				id: toID(data.snapshot.players[1].id || data.snapshot.players[1].name),
 				name: data.snapshot.players[1].name,
 			};
-		}
-		if (room.isTcgPlayer() && !room.tcgKickingInactive && !room.autoTimerActivated && !room.tcgEnded) {
-			this.send('/timer on');
-			room.autoTimerActivated = true;
 		}
 		const actions = data.actions ?? data.snapshot?.actions;
 		const wait = data.wait != null ? data.wait :
