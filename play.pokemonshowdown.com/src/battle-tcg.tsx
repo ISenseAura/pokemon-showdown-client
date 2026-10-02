@@ -928,6 +928,10 @@ function drawCause(
 ): { kind: string, name: string, cardId?: string } | null {
 	const e = events[i];
 	if (!e || e.type !== 'draw') return null;
+	if (e.source?.kind && e.source.kind !== 'turn' && e.source.kind !== 'play' && e.source.kind !== 'checkup') {
+		const name = e.source.name || (e.source.cardId ? cardLabel(e.source.cardId) : '');
+		if (name) return { kind: e.source.kind, name, cardId: e.source.cardId };
+	}
 	for (let j = i - 1; j >= 0; j--) {
 		const p = events[j];
 		if (!p) return null;
@@ -1001,6 +1005,32 @@ function fxDuration(e: TcgEvent): number {
 	if (t === 'discard') return 2000;
 	return 2000;
 }
+/** Name of the card or condition that caused an event. Empty for the player's own play. */
+function sourceName(src?: { kind?: string, name?: string, cardId?: string } | null): string {
+	if (!src || !src.kind) return '';
+	const kind = src.kind;
+	if (kind === 'play' || kind === 'turn' || kind === 'search' || kind === 'promote' || kind === 'retreat' || kind === 'evolve') {
+		return '';
+	}
+	if (src.name) return src.name;
+	if (src.cardId) return cardLabel(src.cardId);
+	if (kind === 'poison') return 'Poison';
+	if (kind === 'burn') return 'Burn';
+	if (kind === 'asleep') return 'Sleep';
+	if (kind === 'paralyzed') return 'Paralysis';
+	if (kind === 'confusion') return 'Confusion';
+	if (kind === 'checkup') return 'Pokémon Checkup';
+	if (kind === 'ko') return 'a Knock Out';
+	return '';
+}
+function fromSource(e: { source?: { kind?: string, name?: string, cardId?: string } }): string {
+	const name = sourceName(e.source);
+	return name ? ` from ${name}` : '';
+}
+function bySource(e: { source?: { kind?: string, name?: string, cardId?: string } }): string {
+	const name = sourceName(e.source);
+	return name ? ` by ${name}` : '';
+}
 function placeTalk(e: TcgEvent, players?: TcgPlayerView[]): { tag: string, extra: string, text: string } {
 	const actor = whoName(players, e.seat);
 	const bench = e.slot !== 'active' && e.slot != null && e.slot !== '';
@@ -1011,13 +1041,29 @@ function placeTalk(e: TcgEvent, players?: TcgPlayerView[]): { tag: string, extra
 			{ tag: 'ACTIVE', extra: 'Face down', text: `${actor} put a Pokémon face down in the Active Spot.` };
 	}
 	const name = cardName(players, e.cardId, e.iid) || cardLabel(e.cardId);
-	// Live battles don't always include prior act; infer from slot.
+	const kind = e.source?.kind || '';
+	const by = sourceName(e.source);
+	if (kind === 'retreat') {
+		return bench ?
+			{ tag: 'BENCH', extra: name, text: `${name} retreated to the Bench.` } :
+			{ tag: 'RETREAT', extra: name, text: `${name} retreated to the Active Spot.` };
+	}
+	if (kind === 'promote') {
+		return { tag: 'ACTIVE', extra: name, text: `${name} was sent to the Active Spot.` };
+	}
+	if (by && (kind === 'attack' || kind === 'ability' || kind === 'trainer' || kind === 'stadium' || kind === 'tool')) {
+		return bench ?
+			{ tag: 'BENCH', extra: name, text: `${name} was switched to the Bench by ${by}.` } :
+			{ tag: 'ACTIVE', extra: name, text: `${name} was switched to the Active Spot by ${by}.` };
+	}
 	if (bench) return { tag: 'BENCH', extra: name, text: `${actor} benched ${name}.` };
 	return { tag: 'ACTIVE', extra: name, text: `${name} came into the Active Spot.` };
 }
 function dmgSrc(events: TcgEvent[], i: number, players?: TcgPlayerView[]): { key: string, label: string } {
 	const e = events[i];
 	if (!e || e.type !== 'damage') return { key: 'effect', label: 'Damage' };
+	const named = sourceName(e.source);
+	if (e.source?.kind && named) return { key: e.source.kind, label: named };
 	for (let j = i - 1; j >= 0; j--) {
 		const p = events[j];
 		if (!p) break;
@@ -1101,8 +1147,11 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?
 		};
 	case 'deal':
 		return { kind: 'setup', label: 'Deal', text: 'Each player drew 7 cards.' };
-	case 'coin':
-		return { kind: 'coin', label: 'Coin', text: ev.heads ? 'Coin flip: Heads.' : 'Coin flip: Tails.' };
+	case 'coin': {
+		const why = sourceName(ev.source);
+		const face = ev.heads ? 'Heads.' : 'Tails.';
+		return { kind: 'coin', label: 'Coin', text: why ? `${why}: ${face}` : `Coin flip: ${face}` };
+	}
 	case 'place': {
 		const talk = placeTalk(ev, players);
 		return {
@@ -1112,14 +1161,16 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?
 			seat: ev.seat,
 		};
 	}
-	case 'evolve':
+	case 'evolve': {
+		const why = fromSource(ev);
 		return {
 			kind: 'evolve', label: 'Evolve',
 			text: ev.fromCardId ?
-				`${nm(ev.fromCardId)} evolved into ${nm(ev.cardId)}.` :
-				`Evolved into ${nm(ev.cardId)}.`,
+				`${nm(ev.fromCardId)} evolved into ${nm(ev.cardId)}${why}.` :
+				`Evolved into ${nm(ev.cardId)}${why}.`,
 			seat: ev.seat,
 		};
+	}
 	case 'attack':
 		return { kind: 'attack', label: 'Attack', text: `${poke(ev.iid)} used ${ev.name}.` };
 	case 'ability':
@@ -1127,36 +1178,36 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?
 	case 'trainer':
 		return { kind: 'trainer', label: 'Play', text: `${w(ev.seat)} played ${nm(ev.cardId)}.`, seat: ev.seat };
 	case 'energy': case 'tool': {
-		// Attach events carry the Pokémon, not the seat; the owner of the Pokémon did it.
 		const seat = ev.seat ?? findMonSlot(players, ev.iid)?.seat;
+		const why = fromSource(ev);
 		return {
 			kind: 'energy', label: ev.type === 'tool' ? 'Tool' : 'Energy',
-			text: `${w(seat)} attached ${nm(ev.cardId)} to ${poke(ev.iid)}.`, seat,
+			text: `${w(seat)} attached ${nm(ev.cardId)} to ${poke(ev.iid)}${why}.`, seat,
 		};
 	}
 	case 'stadium':
 		return { kind: 'trainer', label: 'Stadium', text: `${w(ev.seat)} played ${nm(ev.cardId)}.`, seat: ev.seat };
 	case 'stadiumEnd':
-		return { kind: 'trainer', label: 'Stadium', text: `${nm(ev.cardId)} is no longer in play.` };
+		return { kind: 'trainer', label: 'Stadium', text: `${nm(ev.cardId)} is no longer in play${fromSource(ev)}.` };
 	case 'damage':
-		return { kind: 'damage', label: 'Damage', text: `${poke(ev.iid)} took ${ev.amount} damage.` };
+		return { kind: 'damage', label: 'Damage', text: `${poke(ev.iid)} took ${ev.amount} damage${fromSource(ev)}.` };
 	case 'heal':
-		return { kind: 'heal', label: 'Heal', text: `${poke(ev.iid)} healed ${ev.amount} damage.` };
+		return { kind: 'heal', label: 'Heal', text: `${poke(ev.iid)} healed ${ev.amount} damage${fromSource(ev)}.` };
 	case 'status':
 		return {
 			kind: 'status', label: 'Status',
 			text: ev.status ?
-				`${poke(ev.iid)} is ${statusWord(ev.status)}.` :
-				`${poke(ev.iid)} recovered from Special Conditions.`,
+				`${poke(ev.iid)} is ${statusWord(ev.status)}${fromSource(ev)}.` :
+				`${poke(ev.iid)} recovered from Special Conditions${fromSource(ev)}.`,
 		};
 	case 'ko':
-		return { kind: 'ko', label: 'KO', text: `${poke(ev.iid)} was Knocked Out.`, seat: ev.seat };
+		return { kind: 'ko', label: 'KO', text: `${poke(ev.iid)} was Knocked Out${bySource(ev)}.`, seat: ev.seat };
 	case 'shuffle':
 		return {
 			kind: 'note', label: 'Shuffle',
 			text: ev.from === 'hand' ?
-				`${w(ev.seat)} shuffled their hand into the deck.` :
-				`${w(ev.seat)} shuffled their deck.`,
+				`${w(ev.seat)} shuffled their hand into the deck${fromSource(ev)}.` :
+				`${w(ev.seat)} shuffled their deck${fromSource(ev)}.`,
 			seat: ev.seat,
 		};
 	case 'toDiscard': {
@@ -1164,8 +1215,8 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?
 		const named = ids.length ? ids.map(nm).join(', ') : '';
 		return {
 			kind: 'discard', label: 'Discard',
-			text: named ? `${w(ev.seat)} discarded ${named}.` :
-			`${w(ev.seat)} discarded ${ids.length || 1} card${(ids.length || 1) === 1 ? '' : 's'}.`,
+			text: named ? `${w(ev.seat)} discarded ${named}${fromSource(ev)}.` :
+			`${w(ev.seat)} discarded ${ids.length || 1} card${(ids.length || 1) === 1 ? '' : 's'}${fromSource(ev)}.`,
 			seat: ev.seat,
 		};
 	}
@@ -1174,8 +1225,8 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?
 		const named = ids.length ? ids.map(nm).join(', ') : '';
 		return {
 			kind: 'discard', label: 'Discard',
-			text: named ? `${w(ev.seat)} took ${named} from the discard pile.` :
-			`${w(ev.seat)} took a card from the discard pile.`,
+			text: named ? `${w(ev.seat)} took ${named} from the discard pile${fromSource(ev)}.` :
+			`${w(ev.seat)} took a card from the discard pile${fromSource(ev)}.`,
 			seat: ev.seat,
 		};
 	}
@@ -1183,8 +1234,8 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?
 		return {
 			kind: 'note', label: 'Lost Zone',
 			text: (ev.n || 1) === 1 ?
-				`${w(ev.seat)} put a card in the Lost Zone.` :
-				`${w(ev.seat)} put ${ev.n} cards in the Lost Zone.`,
+				`${w(ev.seat)} put a card in the Lost Zone${fromSource(ev)}.` :
+				`${w(ev.seat)} put ${ev.n} cards in the Lost Zone${fromSource(ev)}.`,
 			seat: ev.seat,
 		};
 	case 'draw': {
@@ -1193,8 +1244,8 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?
 		const named = ids.length && ids.length === n ? ids.map(nm).join(', ') : '';
 		return {
 			kind: 'draw', label: 'Draw',
-			text: named ? `${w(ev.seat)} drew ${named}.` :
-			n === 1 ? `${w(ev.seat)} drew a card.` : `${w(ev.seat)} drew ${n} cards.`,
+			text: named ? `${w(ev.seat)} drew ${named}${fromSource(ev)}.` :
+			n === 1 ? `${w(ev.seat)} drew a card${fromSource(ev)}.` : `${w(ev.seat)} drew ${n} cards${fromSource(ev)}.`,
 			seat: ev.seat,
 		};
 	}
@@ -1204,40 +1255,41 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?
 		const list = names.length ? names.join(', ') : 'no cards';
 		return {
 			kind: 'note', label: 'Reveal',
-			text: `${w(ev.seat)} revealed their hand: ${list}.`,
+			text: `${w(ev.seat)} revealed their hand${fromSource(ev)}: ${list}.`,
 			seat: ev.seat,
 		};
 	}
 	case 'find': {
 		const ids = Array.isArray(ev.ids) ? ev.ids.filter(Boolean) : [];
+		const why = fromSource(ev);
 		const text = ids.length === 1 ?
-			`${w(ev.seat)} put ${nm(ids[0])} into their hand.` :
+			`${w(ev.seat)} put ${nm(ids[0])} into their hand${why}.` :
 			ids.length > 1 ?
-				`${w(ev.seat)} put ${ids.map(nm).join(', ')} into their hand.` :
+				`${w(ev.seat)} put ${ids.map(nm).join(', ')} into their hand${why}.` :
 				((ev.ids?.length) || ev.n || 1) === 1 ?
-					`${w(ev.seat)} put a card into their hand.` :
-					`${w(ev.seat)} put ${(ev.ids?.length) || ev.n} cards into their hand.`;
+					`${w(ev.seat)} put a card into their hand${why}.` :
+					`${w(ev.seat)} put ${(ev.ids?.length) || ev.n} cards into their hand${why}.`;
 		return { kind: 'draw', label: 'Search', text, seat: ev.seat };
 	}
 	case 'prize':
 		return {
 			kind: 'prize', label: 'Prize',
-			text: `${w(ev.seat)} takes ${ev.n} Prize card${ev.n === 1 ? '' : 's'}.`, seat: ev.seat,
+			text: `${w(ev.seat)} takes ${ev.n} Prize card${ev.n === 1 ? '' : 's'}${fromSource(ev)}.`, seat: ev.seat,
 		};
 	case 'prizeTake':
 	{
 		const ids = Array.isArray(ev.ids) ? ev.ids.filter(Boolean) : [];
 		return {
 			kind: 'prize', label: 'Prize',
-			text: ids.length ? `${w(ev.seat)} took a Prize card: ${ids.map(nm).join(', ')}.` :
-			`${w(ev.seat)} took a Prize card.`,
+			text: ids.length ? `${w(ev.seat)} took a Prize card${fromSource(ev)}: ${ids.map(nm).join(', ')}.` :
+			`${w(ev.seat)} took a Prize card${fromSource(ev)}.`,
 			seat: ev.seat,
 		};
 	}
 	case 'points':
 		return {
 			kind: 'prize', label: 'Points',
-			text: `${w(ev.seat)} scored ${ev.n} point${ev.n === 1 ? '' : 's'} (total ${ev.total}).`,
+			text: `${w(ev.seat)} scored ${ev.n} point${ev.n === 1 ? '' : 's'}${fromSource(ev)} (total ${ev.total}).`,
 			seat: ev.seat,
 		};
 	case 'turn':
@@ -1355,7 +1407,7 @@ function fxFor(
 		return {
 			kind: 'damage', iid: e.iid || '', seat: e.seat, amount: e.amount,
 			extra: src.label, src: src.key,
-			message: `${monName(players, e.iid)} took ${e.amount} damage`,
+			message: `${monName(players, e.iid)} took ${e.amount} damage${fromSource(e)}`,
 		};
 	}
 	if (e.type === 'draw') {
@@ -1471,9 +1523,9 @@ function fxFor(
 			kind: e.type, iid: e.iid || '', seat: e.seat,
 			extra: label, onto: mon?.name || 'a Pokémon',
 			ontoId: mon?.cardId || '', cardId: e.cardId || '',
-			message: yours(e.seat) ?
+			message: (yours(e.seat) ?
 				`You attached ${label} to ${mon?.name || 'a Pokémon'}` :
-				`${who(e.seat)} attached ${label} to ${mon?.name || 'a Pokémon'}`,
+				`${who(e.seat)} attached ${label} to ${mon?.name || 'a Pokémon'}`) + fromSource(e),
 		};
 	}
 	if (e.type === 'trainer') {
@@ -1495,14 +1547,14 @@ function fxFor(
 		return {
 			kind: 'ko', iid: e.iid || '', seat: e.seat,
 			extra: memName !== 'a Pokémon' ? memName : '',
-			message: `${memName} was Knocked Out`,
+			message: `${memName} was Knocked Out${bySource(e)}`,
 		};
 	}
 	if (e.type === 'heal') {
 		return {
 			kind: 'heal', iid: e.iid || '', seat: e.seat, amount: e.amount,
 			extra: e.amount ? `+${e.amount}` : 'Healed',
-			message: `${monName(players, e.iid)} healed ${e.amount || 0} damage`,
+			message: `${monName(players, e.iid)} healed ${e.amount || 0} damage${fromSource(e)}`,
 		};
 	}
 	if (e.type === 'attack') {
@@ -1555,11 +1607,11 @@ function fxFor(
 			kind: 'discard',
 			seat: e.seat,
 			extra: named || (took ? 'From the discard pile' : e.type === 'toLost' ? 'Lost Zone' : 'Discarded'),
-			message: took ?
+			message: (took ?
 				`${who(e.seat)} took ${named || 'a card'} from the discard pile` :
 				e.type === 'toLost' ?
 					`${who(e.seat)} put a card in the Lost Zone` :
-					`${who(e.seat)} discarded ${named || 'a card'}`,
+					`${who(e.seat)} discarded ${named || 'a card'}`) + fromSource(e),
 		};
 	}
 	return {
@@ -1577,14 +1629,14 @@ function fxFor(
 		e.type === 'status' ? (e.status ? statusWord(e.status) : 'Recovered') :
 		e.type === 'stadiumEnd' ? 'No longer in play' :
 		(e.name || e.status || e.reason || ''),
-		message: e.type === 'coin' ? (e.heads ? 'Heads!' : 'Tails!') :
+		message: e.type === 'coin' ? ((sourceName(e.source) ? `${sourceName(e.source)}: ` : '') + (e.heads ? 'Heads!' : 'Tails!')) :
 		e.type === 'first' ? (e.chooses ?
 			`${who(e.seat)} chooses who goes first` :
 			`${who(e.seat)} goes first`) :
 		e.type === 'status' ? (e.status ?
-			`${monName(players, e.iid)} is ${statusWord(e.status)}` :
-			`${monName(players, e.iid)} recovered`) :
-		e.type === 'stadiumEnd' ? `${cardLabel(e.cardId)} is no longer in play` :
+			`${monName(players, e.iid)} is ${statusWord(e.status)}${fromSource(e)}` :
+			`${monName(players, e.iid)} recovered${fromSource(e)}`) :
+		e.type === 'stadiumEnd' ? `${cardLabel(e.cardId)} is no longer in play${fromSource(e)}` :
 		undefined,
 		cardId: e.cardId || '',
 		coins: e.type === 'coin' ? [!!e.heads] : undefined,
