@@ -1024,6 +1024,7 @@ function sourceName(src?: { kind?: string, name?: string, cardId?: string } | nu
 	return '';
 }
 function fromSource(e: { source?: { kind?: string, name?: string, cardId?: string } }): string {
+	if (e.source?.kind === 'ko') return ' for the Knock Out';
 	const name = sourceName(e.source);
 	return name ? ` from ${name}` : '';
 }
