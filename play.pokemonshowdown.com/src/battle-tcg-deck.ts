@@ -1,7 +1,12 @@
 /**
  * TCG deck pack/unpack and client-side legality helpers.
  * packedTeam for TCG formats is a JSON array of card ids (server parseTcgDeck).
+ *
+ * Do not define a local `toID` — babel strips imports to globals, and a local
+ * `toID` would overwrite Dex's and break PSIcon / getPokemonIcon.
  */
+
+import { toID } from "./battle-dex";
 
 export type TcgCardRow = {
 	id: string,
@@ -246,8 +251,4 @@ export function deckCounts(ids: string[]) {
 		else if (c.s === 'E') energy++;
 	}
 	return { pokemon, trainer, energy, total: ids.length };
-}
-
-function toID(text: string): string {
-	return text.toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
