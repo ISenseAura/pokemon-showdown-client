@@ -1455,11 +1455,9 @@ span.tcg-card-backface {
 	justify-content: center;
 	gap: 4px;
 	padding: 4px;
-	border-radius: 10px;
-	background: rgba(8, 14, 28, 0.72);
-	border: 1px solid rgba(255, 230, 160, 0.22);
-	box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
-	backdrop-filter: blur(4px);
+	/* Neutral backing only; the buttons themselves use PS's stock .button theme. */
+	border-radius: 5px;
+	background: rgba(0, 0, 0, 0.25);
 	max-width: 100%;
 }
 .tcg-chrome.live .tcg-chrome-group,
@@ -1478,17 +1476,12 @@ span.tcg-card-backface {
 	min-height: 0;
 	white-space: nowrap;
 }
+/* Timer keeps PS's stock .button / .timerbutton-on / -critical styling; only sized here. */
 .tcg-chrome .timerbutton {
 	float: none;
 	max-width: 100%;
 	padding: 5px 9px;
-	font-weight: 700;
 	font-size: 11px;
-	background: rgba(8, 14, 28, 0.82);
-	border: 1px solid rgba(255, 230, 160, 0.35);
-	color: #ffe9a8;
-	box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
-	backdrop-filter: blur(4px);
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
@@ -3668,20 +3661,9 @@ span.tcg-card-backface {
 	top: 8px;
 	right: 8px;
 	left: auto;
-	font-size: 13px;
-	font-weight: 700;
-	padding: 7px 12px;
-	border-radius: 10px;
-	color: #fff8e8;
-	background: rgba(8, 12, 24, 0.78);
-	border: 1px solid rgba(255, 220, 140, 0.4);
-	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
-	backdrop-filter: blur(4px);
-}
-.tcg-view-toggle:hover,
-.tcg-view-toggle:active {
-	background: rgba(20, 28, 48, 0.92);
-	border-color: rgba(255, 220, 140, 0.65);
+	/* Board/Chat toggle uses PS's stock .button theme (mirrors .battle-chat-toggle). */
+	font-size: 14px;
+	padding: 3px 6px;
 }
 .tcg-mobile-chat {
 	display: flex;
