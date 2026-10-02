@@ -7,6 +7,7 @@
  */
 
 import { toID } from "./battle-dex";
+import { Net } from "./client-connection";
 
 export type TcgCardRow = {
 	id: string,
@@ -67,21 +68,23 @@ export const TCG_DECK_RULES: { [id in TcgDeckFormat]: TcgDeckRules } = {
 };
 
 let cardIndex: TcgCardRow[] | null = null;
-let byId: Map<string, TcgCardRow> | null = null;
-let byIdLower: Map<string, TcgCardRow> | null = null;
-let byName: Map<string, TcgCardRow[]> | null = null;
+let byId: { [id: string]: TcgCardRow } | null = null;
+let byIdLower: { [id: string]: TcgCardRow } | null = null;
+let byName: { [name: string]: TcgCardRow[] } | null = null;
 let loadPromise: Promise<TcgCardRow[]> | null = null;
 
 function indexCards(rows: TcgCardRow[]) {
 	cardIndex = rows;
-	byId = new Map(rows.map(c => [c.id, c]));
-	byIdLower = new Map(rows.map(c => [c.id.toLowerCase(), c]));
-	byName = new Map();
+	byId = Object.create(null);
+	byIdLower = Object.create(null);
+	byName = Object.create(null);
 	for (const c of rows) {
+		byId[c.id] = c;
+		byIdLower[c.id.toLowerCase()] = c;
 		const key = toID(c.n);
-		const list = byName.get(key) || [];
+		const list = byName[key] || [];
 		list.push(c);
-		byName.set(key, list);
+		byName[key] = list;
 	}
 }
 
@@ -95,7 +98,6 @@ export function isTcgRandomFormat(format: string | undefined | null): boolean {
 	return id.includes('tcg') && id.includes('random');
 }
 
-/** Map a Showdown format id to Wave-style standard/pocket. */
 export function tcgDeckFormatOf(format: string | undefined | null): TcgDeckFormat {
 	const id = toID(format || '');
 	if (id.includes('pocket')) return 'pocket';
@@ -137,7 +139,7 @@ export function unpackTcgDeck(packed: string | undefined | null): string[] {
 
 export function isTcgPacked(packed: string | undefined | null): boolean {
 	const s = String(packed || '').trim();
-	if (!s) return true; // empty TCG deck is valid storage
+	if (!s) return true;
 	if (s.startsWith('[')) {
 		try {
 			const v = JSON.parse(s);
@@ -146,19 +148,16 @@ export function isTcgPacked(packed: string | undefined | null): boolean {
 			return false;
 		}
 	}
-	// Pokemon VG packs always contain |
 	return !s.includes('|');
 }
 
 export function loadTcgCardIndex(): Promise<TcgCardRow[]> {
 	if (cardIndex) return Promise.resolve(cardIndex);
 	if (loadPromise) return loadPromise;
-	loadPromise = fetch('/tcg-cards-index.json')
-		.then(r => {
-			if (!r.ok) throw new Error(`tcg-cards-index.json ${r.status}`);
-			return r.json();
-		})
-		.then((rows: TcgCardRow[]) => {
+	loadPromise = Net('/tcg-cards-index.json').get()
+		.then(text => {
+			const rows = JSON.parse(text) as TcgCardRow[];
+			if (!Array.isArray(rows)) throw new Error('tcg-cards-index.json');
 			indexCards(rows);
 			return rows;
 		})
@@ -173,7 +172,7 @@ export function loadTcgCardIndex(): Promise<TcgCardRow[]> {
 
 export function getTcgCard(id: string): TcgCardRow | undefined {
 	if (!id) return undefined;
-	return byId?.get(id) || byIdLower?.get(id.toLowerCase());
+	return byId?.[id] || byIdLower?.[id.toLowerCase()];
 }
 
 export function allTcgCards(): TcgCardRow[] {
@@ -194,15 +193,14 @@ export function copyMaxFor(card: TcgCardRow, format: TcgDeckFormat): number {
 
 export type TcgDeckLine = { id: string, card: TcgCardRow | undefined, n: number };
 
-/** Collapse a list of ids into qty lines, preserving first-seen order. */
 export function groupDeck(ids: string[]): TcgDeckLine[] {
 	const order: string[] = [];
-	const counts = new Map<string, number>();
+	const counts: { [id: string]: number } = Object.create(null);
 	for (const id of ids) {
-		if (!counts.has(id)) order.push(id);
-		counts.set(id, (counts.get(id) || 0) + 1);
+		if (!counts[id]) order.push(id);
+		counts[id] = (counts[id] || 0) + 1;
 	}
-	return order.map(id => ({ id, card: getTcgCard(id), n: counts.get(id)! }));
+	return order.map(id => ({ id, card: getTcgCard(id), n: counts[id] }));
 }
 
 export function deckProblemsClient(ids: string[], format: TcgDeckFormat): string[] {
@@ -211,7 +209,7 @@ export function deckProblemsClient(ids: string[], format: TcgDeckFormat): string
 	if (ids.length !== rules.deckSize) {
 		errors.push(`${rules.name} decks must be ${rules.deckSize} cards (got ${ids.length}).`);
 	}
-	const named = new Map<string, number>();
+	const named: { [name: string]: number } = Object.create(null);
 	let ace = 0;
 	let radiant = 0;
 	let basics = 0;
@@ -236,8 +234,8 @@ export function deckProblemsClient(ids: string[], format: TcgDeckFormat): string
 			continue;
 		}
 		if (c.be) continue;
-		const n = (named.get(c.n) || 0) + 1;
-		named.set(c.n, n);
+		const n = (named[c.n] || 0) + 1;
+		named[c.n] = n;
 		if (n === copyMaxFor(c, format) + 1) over.push(`${c.n} (max ${copyMaxFor(c, format)})`);
 	}
 
@@ -254,7 +252,6 @@ export function deckProblemsClient(ids: string[], format: TcgDeckFormat): string
 	return errors;
 }
 
-/** Counts by supertype for the rail header. */
 export function deckCounts(ids: string[]) {
 	let pokemon = 0, trainer = 0, energy = 0;
 	for (const id of ids) {
@@ -267,17 +264,13 @@ export function deckCounts(ids: string[]) {
 	return { pokemon, trainer, energy, total: ids.length };
 }
 
-/**
- * Compact teambuilder strip: unique cards, Pokémon first, then Trainer/Energy.
- * Never grows with deck size — callers should render at most `limit` thumbs.
- */
 export function deckPreviewCards(ids: string[], limit = 6): TcgCardRow[] {
-	const seen = new Set<string>();
+	const seen: { [id: string]: 1 } = Object.create(null);
 	const poke: TcgCardRow[] = [];
 	const other: TcgCardRow[] = [];
 	for (const id of ids) {
-		if (seen.has(id)) continue;
-		seen.add(id);
+		if (seen[id]) continue;
+		seen[id] = 1;
 		const c = getTcgCard(id);
 		if (!c) continue;
 		if (c.s === 'P') poke.push(c);
@@ -292,42 +285,30 @@ const SECTION_LABEL: { [s: string]: string } = {
 	E: 'Energy',
 };
 
-/** Human-readable deck list (Limitless-style) for Import/Export. */
 export function exportTcgDeck(ids: string[]): string {
 	const lines = groupDeck(ids);
 	const out: string[] = [];
+	const pushGroup = (label: string, group: TcgDeckLine[]) => {
+		let count = 0;
+		for (const line of group) count += line.n;
+		out.push(`${label}: ${count}`);
+		for (const line of group) out.push(`${line.n} ${line.card?.n || line.id} ${line.id}`);
+		out.push('');
+	};
 	const sections = ['P', 'T', 'E'];
-	for (let i = 0; i < sections.length; i++) {
-		const s = sections[i];
-		const group = [];
-		for (let j = 0; j < lines.length; j++) {
-			if ((lines[j].card?.s || '?') === s) group.push(lines[j]);
+	for (const section of sections) {
+		const group: TcgDeckLine[] = [];
+		for (const line of lines) {
+			if ((line.card?.s || '?') === section) group.push(line);
 		}
-		let count = 0;
-		for (let j = 0; j < group.length; j++) count += group[j].n;
-		out.push(`${SECTION_LABEL[s]}: ${count}`);
-		for (let j = 0; j < group.length; j++) {
-			const l = group[j];
-			out.push(`${l.n} ${l.card?.n || l.id} ${l.id}`);
-		}
-		out.push('');
+		pushGroup(SECTION_LABEL[section], group);
 	}
-	const unknown = [];
-	for (let i = 0; i < lines.length; i++) {
-		const l = lines[i];
-		if (!l.card || !SECTION_LABEL[l.card.s]) unknown.push(l);
+	const unknown: TcgDeckLine[] = [];
+	for (const line of lines) {
+		if (!line.card || !SECTION_LABEL[line.card.s]) unknown.push(line);
 	}
-	if (unknown.length) {
-		let count = 0;
-		for (let i = 0; i < unknown.length; i++) count += unknown[i].n;
-		out.push('Other: ' + count);
-		for (let i = 0; i < unknown.length; i++) {
-			const l = unknown[i];
-			out.push(`${l.n} ${l.card?.n || l.id} ${l.id}`);
-		}
-		out.push('');
-	}
-	return out.join('\n').trimEnd() + '\n';
+	if (unknown.length) pushGroup('Other', unknown);
+	return out.join('\n').replace(/\s+$/, '') + '\n';
 }
 
 function preferLegal(cards: TcgCardRow[], format: TcgDeckFormat): TcgCardRow[] {
@@ -364,7 +345,7 @@ export function resolveImportCard(
 					`${set.toLowerCase()}-${num}`,
 					`${set}-${num.replace(/^0+/, '') || '0'}`,
 					`${set.toLowerCase()}-${(num.replace(/^0+/, '') || '0')}`,
-					`${set}-${num.padStart(3, '0')}`,
+					`${set}-${('000' + num).slice(-3)}`,
 				];
 				for (const id of candidates) {
 					const c = getTcgCard(id);
@@ -376,13 +357,15 @@ export function resolveImportCard(
 
 	// Name only (optionally with ignored trailing set tokens that failed above)
 	let name = rest;
-	if (parts.length >= 3 && /^[A-Za-z0-9]+$/.test(parts[parts.length - 2]) && /^[A-Za-z0-9]+$/.test(parts[parts.length - 1])) {
+	if (parts.length >= 3 &&
+		/^[A-Za-z0-9]+$/.test(parts[parts.length - 2]) &&
+		/^[A-Za-z0-9]+$/.test(parts[parts.length - 1])) {
 		name = parts.slice(0, -2).join(' ');
 	} else if (parts.length >= 2 && getTcgCard(parts[parts.length - 1])) {
 		name = parts.slice(0, -1).join(' ');
 	}
 
-	const matches = preferLegal(byName?.get(toID(name)) || [], format);
+	const matches = preferLegal(byName?.[toID(name)] || [], format);
 	if (!matches.length) return null;
 	if (matches.length === 1) return { id: matches[0].id };
 	// Prefer higher regulation mark, then stable id order
@@ -421,7 +404,7 @@ export function importTcgDeck(text: string, format: TcgDeckFormat): TcgImportRes
 		let line = raw.trim();
 		if (!line) continue;
 		if (/^(pok[eé]mon|trainer|energy|other)\s*:/i.test(line)) continue;
-		if (/^===/.test(line) || /^format\s*:/i.test(line) || /^total\s*:/i.test(line)) continue;
+		if (line.startsWith("===") || /^format\s*:/i.test(line) || /^total\s*:/i.test(line)) continue;
 		// Strip leading bullets / dashes
 		line = line.replace(/^[-*•]\s*/, '');
 

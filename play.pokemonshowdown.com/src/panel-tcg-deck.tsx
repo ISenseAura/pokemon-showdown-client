@@ -172,11 +172,12 @@ export class TcgDeckEditor extends preact.Component<{
 		this.searchTimer = window.setTimeout(() => this.setState({ q }), 80);
 	};
 
-	validate = async () => {
+	validate = () => {
 		this.setState({ validating: true, serverErrors: null });
 		const formatid = this.props.team.format || showdownFormatFor(this.state.format);
-		const res = await requestValidate(formatid, this.state.ids);
-		this.setState({ validating: false, serverErrors: res.errors || [] });
+		requestValidate(formatid, this.state.ids).then(res => {
+			this.setState({ validating: false, serverErrors: res.errors || [] });
+		});
 	};
 
 	setMode = (mode: EditorMode) => {
@@ -234,15 +235,19 @@ export class TcgDeckEditor extends preact.Component<{
 		});
 	};
 
-	copyExport = async () => {
+	copyExport = () => {
 		const text = this.state.importDirty ? this.state.importText : exportTcgDeck(this.state.ids);
-		try {
-			await navigator.clipboard.writeText(text);
+		const clip = navigator.clipboard;
+		if (!clip?.writeText) {
+			PS.alert('Could not copy to clipboard. Select the text and copy manually.');
+			return;
+		}
+		clip.writeText(text).then(() => {
 			this.setState({ copied: true });
 			window.setTimeout(() => this.setState({ copied: false }), 1500);
-		} catch {
+		}, () => {
 			PS.alert('Could not copy to clipboard. Select the text and copy manually.');
-		}
+		});
 	};
 
 	filteredCards(): TcgCardRow[] {
@@ -269,7 +274,7 @@ export class TcgDeckEditor extends preact.Component<{
 	}
 
 	override render() {
-		const { ids, format, ready, validating, serverErrors, preview, mode } = this.state;
+		const { ids, format, preview, mode } = this.state;
 
 		return <div class={`tcg-deck-builder${this.props.narrow ? ' narrow' : ''}`}>
 			<ul class="tabbar unpadded-tabbar tcg-deck-tabs">
