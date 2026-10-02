@@ -25,6 +25,7 @@ import { Net } from "./client-connection";
 import { BattleLog } from "./battle-log";
 import {
 	TcgBoard, isTcgBattleId, chatEntryForEvent, chatHtmlForEntry, noteTcgMons, loadPaperNames, applyTcgEvents,
+	normalizeTcgEnergy,
 	type TcgAction, type TcgEvent, type TcgPokemonView, type TcgSnapshot,
 } from "./battle-tcg";
 
@@ -605,6 +606,7 @@ export class BattleRoom extends ChatRoom {
 			if (item.snapshot.format) this.tcgFormat = item.snapshot.format;
 			else if (this.tcgFormat) item.snapshot = { ...item.snapshot, format: this.tcgFormat };
 			if (item.actions) item.snapshot = { ...item.snapshot, actions: item.actions };
+			normalizeTcgEnergy(item.snapshot);
 			this.tcgSnapshot = item.snapshot;
 			if (item.snapshot.status === 'over') {
 				this.tcgEnded = true;
@@ -691,10 +693,7 @@ export class BattleRoom extends ChatRoom {
 	loadReplay() {
 		const replayid = this.id.slice(7);
 		const tcg = isTcgBattleId(this.id) || this.tcgMode;
-		const urls = tcg ? [
-			`/replay/${replayid}.json`,
-			`https://${Config.routes.client}/replay/${replayid}.json`,
-		] : [
+		const urls = tcg ? [] as string[] : [
 			`https://${Config.routes.replays}/${replayid}.json`,
 			`https://replay.pokemonshowdown.com/${replayid}.json`,
 		];
@@ -702,11 +701,19 @@ export class BattleRoom extends ChatRoom {
 			const proto = PS.server.protocol === 'http' ? 'http' : 'https';
 			const port = PS.server.httpport || (proto === 'http' ? PS.server.port : 0);
 			const origin = `${proto}://${PS.server.host}${port && port !== 80 && port !== 443 ? `:${port}` : ''}`;
-			const simUrl = `${origin}/replay/${replayid}.json`;
-			if (!urls.includes(simUrl)) urls.push(simUrl);
+			urls.push(`${origin}/replay/${replayid}.json`);
+		}
+		if (tcg) {
+			urls.push(`/replay/${replayid}.json`);
+			if (Config.routes?.client) urls.push(`https://${Config.routes.client}/replay/${replayid}.json`);
 		}
 		const tryFetch = (i: number): Promise<string> =>
-			Net(urls[i]).get().catch(() => (i + 1 < urls.length ? tryFetch(i + 1) : ''));
+			Net(urls[i]).get().then(data => {
+				const body = String(data || '').trim();
+				if (body.startsWith('{') || body.startsWith('[')) return body;
+				if (i + 1 < urls.length) return tryFetch(i + 1);
+				return '';
+			}).catch(() => (i + 1 < urls.length ? tryFetch(i + 1) : ''));
 		tryFetch(0).then(data => {
 			try {
 				const replay = JSON.parse(data);
@@ -717,6 +724,8 @@ export class BattleRoom extends ChatRoom {
 					const raw = marker >= 0 ? log.slice(marker) :
 						log.trimStart().startsWith('{') ? log : '';
 					if (!raw) throw new Error('no tcg replay');
+					this.connectMode = null;
+					this.connectError = null;
 					this.loadTcgReplayPayload(raw, `[${replay.format}] ${replay.players?.join(' vs. ') || ''}`);
 					return;
 				}
@@ -1138,8 +1147,8 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 			return;
 		}
 		case 'inactive': {
-			room.log?.add(args);
 			const msg = args[1] || '';
+			if (!msg.startsWith('Time left: ')) room.log?.add(args);
 			if (msg.startsWith('Time left: ')) {
 				const [time, totalTime] = msg.split(' | ');
 				room.tcgKickingInactive = parseInt(time.slice(11), 10) || true;
@@ -1246,7 +1255,7 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 				name: data.snapshot.players[1].name,
 			};
 		}
-		if (PS.prefs.autotimer && room.isTcgPlayer() && !room.tcgKickingInactive && !room.autoTimerActivated) {
+		if (room.isTcgPlayer() && !room.tcgKickingInactive && !room.autoTimerActivated && !room.tcgEnded) {
 			this.send('/timer on');
 			room.autoTimerActivated = true;
 		}
@@ -1333,6 +1342,13 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		room.tcgWait = true;
 		room.sendDirect(`/choose ${JSON.stringify(action)}`);
 		room.update(null);
+		window.setTimeout(() => {
+			if (!room.tcgWait || room.tcgEnded) return;
+			if (room.tcgSnapshot?.actions?.length) {
+				room.tcgWait = false;
+				room.update(null);
+			}
+		}, 4500);
 	};
 	receiveRequest(request: BattleRequest | null) {
 		const room = this.props.room;
@@ -1373,6 +1389,7 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		if (room.connectMode !== 'deleted' && room.connectMode !== 'not-found') {
 			return null;
 		}
+		if (room.tcgMode && (room.tcgSnapshot || room.tcgReplayMode)) return null;
 		return <div class="pad"><div class="broadcast-red pad">
 			<h3>{room.connectError || "Error"}</h3>
 			<p class="buttonbar"><button class="button" data-cmd="/close"><strong>Close</strong></button></p>
