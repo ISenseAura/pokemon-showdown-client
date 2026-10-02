@@ -1912,8 +1912,9 @@ class BattleTimerPanel extends PSRoomPanel {
 
 	override render() {
 		const room = this.props.room.getParent() as BattleRoom;
+		const kicking = room.tcgMode ? room.tcgKickingInactive : room.battle?.kickingInactive;
 		return <PSPanelWrapper room={this.props.room}><div class="pad">
-			{room.battle.kickingInactive ? (
+			{kicking ? (
 				<button class="button" data-cmd="/closeand /inopener /timer stop">Stop Timer</button>
 			) : (
 				<button class="button" data-cmd="/closeand /inopener /timer start">Start Timer</button>

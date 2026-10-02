@@ -99,6 +99,8 @@ type FxBeat = {
 	ids?: string[],
 	labels?: string[],
 	hits?: FxHit[],
+	/** Ordered heads/tails results for a coin beat (one or many flips). */
+	coins?: boolean[],
 	tie?: boolean,
 	element?: string,
 	slot?: TcgSlot,
@@ -381,7 +383,7 @@ function fxDuration(e: TcgEvent): number {
 	if (t === 'damage' || t === 'heal') return 2600;
 	if (t === 'ko') return 2800;
 	if (t === 'over') return 4200;
-	if (t === 'prize' || t === 'prizeTake') return 3000;
+	if (t === 'prize' || t === 'prizeTake') return 1200;
 	if (t === 'points') return 2400;
 	if (t === 'find') return 2600;
 	if (t === 'draw') return 2400; // effect draws override wait in playFx
@@ -886,6 +888,7 @@ function fxFor(
 			e.type === 'stadiumEnd' ? `${cardLabel(e.cardId)} is no longer in play` :
 			undefined,
 		cardId: e.cardId || '',
+		coins: e.type === 'coin' ? [!!e.heads] : undefined,
 	};
 }
 
@@ -991,10 +994,46 @@ class FxOverlay extends preact.Component<{ fx: FxBeat | null, you?: number | nul
 		);
 
 		if (k === 'coin') {
-			const side = fx.extra === 'Heads' ? 'HEADS' : 'TAILS';
+			const coins = (fx.coins && fx.coins.length) ? fx.coins :
+				[fx.extra === 'Heads' || fx.extra === 'HEADS'];
+			const shown = coins.slice(0, 8);
+			const headsN = shown.filter(Boolean).length;
+			const tailsN = shown.length - headsN;
+			const forFirst = fx.extra === 'First';
+			const side = forFirst ? (shown[0] ? 'HEADS' : 'TAILS') :
+				shown.length === 1 ?
+					(shown[0] ? 'HEADS' : 'TAILS') :
+					`${headsN}H · ${tailsN}T`;
+			const result = fx.message || (shown.length === 1 ?
+				(shown[0] ? 'Heads!' : 'Tails!') :
+				`${headsN} Heads · ${tailsN} Tails`);
+			const lifeMs = (forFirst ? 2600 : 2100) + Math.max(0, shown.length - 1) * 200;
 			return wrap('coin', <>
-				{cap('COIN', side)}
-				<div class={`fx-coin ${fx.extra === 'Heads' ? 'heads' : 'tails'}`}><b>{side}</b></div>
+				{cap(forFirst ? 'FIRST' : 'COIN', side)}
+				<div
+					class={`fx-coin-row n-${shown.length}`}
+					style={{ animationDuration: `${lifeMs}ms` }}
+				>
+					{shown.map((heads, idx) => (
+						<div
+							class="fx-coin-scene"
+							key={`coin-${idx}-${heads ? 'h' : 't'}`}
+							style={{ '--coin-delay': `${idx * 0.16}s` } as any}
+						>
+							<div class={`fx-coin-3d ${heads ? 'land-heads' : 'land-tails'}`}>
+								<div class="fx-coin-face front">
+									<span>H</span>
+									<em>HEADS</em>
+								</div>
+								<div class="fx-coin-face back">
+									<span>T</span>
+									<em>TAILS</em>
+								</div>
+							</div>
+						</div>
+					))}
+				</div>
+				<div class="fx-coin-result" style={{ animationDuration: `${lifeMs}ms` }}>{result}</div>
 			</>);
 		}
 		if (k === 'drawEffect') {
@@ -1896,6 +1935,8 @@ export class TcgBoard extends preact.Component<{
 	onTogglePause?: () => void,
 	onReplay?: () => void,
 	onSkip?: () => void,
+	/** When false, post-game Play/Replay/Skip chrome is omitted (parent control strip owns it). */
+	showReplayControls?: boolean,
 }> {
 	override state = {
 		selectedHand: null as number | null,
@@ -1924,6 +1965,11 @@ export class TcgBoard extends preact.Component<{
 		inspect: null as Preview | null,
 		menuSlot: null as TcgSlot | null,
 		endTurnConfirm: false,
+		/**
+		 * takePrize clicks already sent while the board still shows the pre-pick snapshot.
+		 * Used so the prize prompt closes as soon as enough picks are in, not after FX.
+		 */
+		prizeTakenLocal: 0,
 		drag: null as DragState | null,
 	};
 	timer: number | null = null;
@@ -2037,6 +2083,15 @@ export class TcgBoard extends preact.Component<{
 			if (this.timer != null) window.clearTimeout(this.timer);
 			this.timer = null;
 			this.clearFx();
+		}
+		// Server caught up to our prize picks — drop the optimistic counter.
+		const prevPrize = prev.snapshot?.pendingPrize;
+		const nextPrize = this.props.snapshot?.pendingPrize;
+		if (
+			this.state.prizeTakenLocal &&
+			(prevPrize?.n !== nextPrize?.n || prevPrize?.seat !== nextPrize?.seat || !nextPrize)
+		) {
+			this.setState({ prizeTakenLocal: 0 });
 		}
 		if (this.props.fxKey !== prev.fxKey) {
 			this.stashHands(prev.fxSnapshot || prev.snapshot);
@@ -2399,6 +2454,66 @@ export class TcgBoard extends preact.Component<{
 				return;
 			}
 
+			// Consecutive coin events → one staggered multi-coin beat.
+			// Opening flip often arrives as coin + first; fold the announce into the coin beat.
+			if (e.type === 'coin' || e.type === 'first') {
+				const results: boolean[] = [];
+				let j = i;
+				if (e.type === 'coin') {
+					results.push(!!e.heads);
+					j = i + 1;
+					while (j < events.length && events[j]?.type === 'coin') {
+						this.props.onEvent?.(events[j]);
+						results.push(!!events[j].heads);
+						j++;
+					}
+				}
+				let firstEv: TcgEvent | null = null;
+				if (e.type === 'first') {
+					firstEv = e;
+					j = i + 1;
+					// No coin event (older server): invent a face so the opening flip still animates.
+					// Seat 0 won → Heads, seat 1 → Tails (matches engine mapping).
+					results.push(e.seat === 0);
+				} else if (events[j]?.type === 'first') {
+					this.props.onEvent?.(events[j]);
+					firstEv = events[j];
+					j++;
+				}
+				const headsN = results.filter(Boolean).length;
+				const tailsN = results.length - headsN;
+				const whoFirst = firstEv?.seat != null ?
+					actorLabel(players, firstEv.seat, you) : '';
+				const youWonFirst = firstEv ? actorIsYou(firstEv.seat, you) : false;
+				const coinFx: FxBeat = {
+					kind: 'coin',
+					coins: results,
+					n: results.length,
+					seat: firstEv?.seat ?? e.seat,
+					extra: firstEv ? 'First' :
+						(results.length === 1 ?
+							(results[0] ? 'Heads' : 'Tails') :
+							`${results.length} flips`),
+					message: firstEv ?
+						(firstEv.chooses ?
+							(youWonFirst ?
+								'You won the coin flip and choose who goes first' :
+								`${whoFirst} won the coin flip and chooses who goes first`) :
+							(youWonFirst ?
+								'You won the coin flip and go first' :
+								`${whoFirst} won the coin flip and goes first`)) :
+						(results.length === 1 ?
+							(results[0] ? 'Heads!' : 'Tails!') :
+							`${headsN} Heads · ${tailsN} Tails`),
+				};
+				show(coinFx);
+				// Flip (~1.55s) + stagger + hold; linger a bit longer for the first-player announce.
+				const wait = (firstEv ? 2600 : 2100) + Math.max(0, results.length - 1) * 200;
+				i = j;
+				this.timer = window.setTimeout(step, wait);
+				return;
+			}
+
 			if (e.type === 'attack' || e.type === 'ability') {
 				const hits = attackHits(events, i, players);
 				if (!fx.extra) fx.extra = e.name || (e.type === 'ability' ? 'Ability' : 'Attack');
@@ -2512,7 +2627,13 @@ export class TcgBoard extends preact.Component<{
 	};
 
 	choose = (a: TcgAction) => {
-		this.setState({ selectedHand: null, energyPick: false, retreatPick: false, drag: null, menuSlot: null, endTurnConfirm: false });
+		const prizeTakenLocal = a.type === 'takePrize' ?
+			this.state.prizeTakenLocal + 1 :
+			0;
+		this.setState({
+			selectedHand: null, energyPick: false, retreatPick: false, drag: null,
+			menuSlot: null, endTurnConfirm: false, prizeTakenLocal,
+		});
 		this.props.onAct(a);
 	};
 
@@ -2869,7 +2990,10 @@ export class TcgBoard extends preact.Component<{
 		const searches = allActs.filter(a => a.type === 'searchPick' || a.type === 'searchDone');
 		const discards = allActs.filter(a => a.type === 'discardPick');
 		const pays = allActs.filter(a => a.type === 'payEnergy');
-		const prizes = allActs.filter(a => a.type === 'takePrize');
+		const prizeActs = allActs.filter(a => a.type === 'takePrize');
+		const prizeNeed = snap.pendingPrize?.n || 0;
+		// Snapshot (and takePrize actions) lag until prize FX commits — hide as soon as enough picks are sent.
+		const prizes = (prizeNeed > 0 && this.state.prizeTakenLocal >= prizeNeed) ? [] : prizeActs;
 		const mulligans = allActs.filter(a => a.type === 'mulliganBench' || a.type === 'mulliganDone');
 		const useStadium = allActs.find(a => a.type === 'useStadium');
 		const selectedHand = this.state.selectedHand;
@@ -2914,8 +3038,11 @@ export class TcgBoard extends preact.Component<{
 			(snap.pendingDiscard ? `Drag ${snap.pendingDiscard.need} card${snap.pendingDiscard.need === 1 ? '' : 's'} to Discard` : '') ||
 			(snap.pendingRetreatPay ? `Discard ${snap.pendingRetreatPay.need} Energy to retreat` : '') ||
 			(snap.pendingPromote != null ? 'Choose a Benched Pokémon to promote' : '') ||
-			(snap.pendingPrize ? `Take ${snap.pendingPrize.n} Prize card${snap.pendingPrize.n === 1 ? '' : 's'}` : '') ||
-			(prizes.length ? 'Take a Prize card' : '') ||
+			(prizes.length && snap.pendingPrize ?
+				`Take ${Math.max(1, snap.pendingPrize.n - this.state.prizeTakenLocal)} Prize card${
+					snap.pendingPrize.n - this.state.prizeTakenLocal === 1 ? '' : 's'
+				}` :
+				prizes.length ? 'Take a Prize card' : '') ||
 			(discards.length ? 'Drag a card to Discard' : '') ||
 			(snap.status === 'setup' ? 'Drag Basics to Active / Bench, then Ready' : '') ||
 			(yourTurn ? 'Drag cards to play · Tap your Pokémon to attack' : '');
@@ -2997,6 +3124,8 @@ export class TcgBoard extends preact.Component<{
 					</span>
 					{turnWho && <span class="tcg-turn-who">{turnWho}</span>}
 				</div>
+				{/* Balances the grid so the turn badge stays centered; chrome (Timer) docks here. */}
+				<div class="tcg-hud-tools" aria-hidden="true"></div>
 			</header>
 
 			<div class="tcg-dock-foe" title={`${pileCount(foe.hand)} in hand`}>
@@ -3233,7 +3362,7 @@ export class TcgBoard extends preact.Component<{
 
 			{hint && <div class="tcg-float-hint">{hint}</div>}
 
-			{this.props.ended && <div class="tcg-replay-controls">
+			{this.props.ended && this.props.showReplayControls !== false && <div class="tcg-replay-controls">
 				<button type="button" class="button" onClick={this.props.onTogglePause}>
 					<i class={`fa fa-${this.props.paused ? 'play' : 'pause'}`} aria-hidden></i> {this.props.paused ? 'Play' : 'Pause'}
 				</button>

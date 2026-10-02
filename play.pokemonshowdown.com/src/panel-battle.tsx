@@ -198,6 +198,19 @@ export class BattleRoom extends ChatRoom {
 	tcgEnded = false;
 	/** Winner display name from `|win|`; `null` means tie / unknown. */
 	tcgWinner: string | null = null;
+	/** Seat shown at the bottom for spectators / offline replay (0 or 1). */
+	tcgViewpoint: 0 | 1 = 0;
+	/** Your seat when playing; null when spectating. */
+	tcgSide: 0 | 1 | null = null;
+	tcgP1 = { id: '', name: '' };
+	tcgP2 = { id: '', name: '' };
+	/** Timer countdown from `|inactive|` (TCG has no Battle object). */
+	tcgKickingInactive: number | boolean = false;
+	tcgTotalTimeLeft = 0;
+	/** Offline / uploaded replay — scrub freely. */
+	tcgReplayMode = false;
+	/** History index currently displayed while scrubbing (−1 = live end). */
+	tcgSeekIndex = -1;
 
 	override interruptClose(explicit?: boolean, elem?: HTMLElement | null) {
 		if (this.isPlaying() || this.requireForfeit) {
@@ -272,8 +285,229 @@ export class BattleRoom extends ChatRoom {
 		this.tcgSetupHidden = {};
 		this.tcgEnded = false;
 		this.tcgWinner = null;
+		this.tcgViewpoint = 0;
+		this.tcgSide = null;
+		this.tcgKickingInactive = false;
+		this.tcgTotalTimeLeft = 0;
+		this.tcgReplayMode = false;
+		this.tcgSeekIndex = -1;
 		this.updateChoiceNotification();
 		return false;
+	}
+
+	tcgFormatId() {
+		const parts = this.id.split('-');
+		return parts[1] || 'tcgstandard';
+	}
+	tcgOpponentId() {
+		if (this.tcgSide === 0) return toID(this.tcgP2.id || this.tcgP2.name);
+		if (this.tcgSide === 1) return toID(this.tcgP1.id || this.tcgP1.name);
+		return '';
+	}
+	isTcgPlayer() {
+		return this.tcgSide != null && !this.tcgReplayMode;
+	}
+	isTcgSpectator() {
+		return this.tcgSide == null || this.tcgReplayMode;
+	}
+	switchTcgViewpoint = () => {
+		if (!this.isTcgSpectator() && !this.tcgEnded && !this.tcgReplayMode) return;
+		this.tcgViewpoint = this.tcgViewpoint === 0 ? 1 : 0;
+		this.update(null);
+	};
+	/** Snapshot for the board with spectator viewpoint applied. */
+	tcgViewSnapshot(snap: TcgSnapshot | null): TcgSnapshot | null {
+		if (!snap) return null;
+		if (this.isTcgPlayer() && !this.tcgEnded && !this.tcgReplayMode) return snap;
+		if (snap.you != null && !this.tcgReplayMode && !this.tcgEnded) return snap;
+		return { ...snap, you: this.tcgViewpoint };
+	}
+	turnAtHistoryIndex(index: number): number {
+		let turn = 0;
+		for (let i = 0; i <= index && i < this.tcgHistory.length; i++) {
+			const item = this.tcgHistory[i];
+			if (item.snapshot?.turnNumber != null) turn = item.snapshot.turnNumber;
+			for (const ev of item.events || []) {
+				if (ev.type === 'turn' && typeof ev.number === 'number') turn = ev.number;
+			}
+		}
+		return turn;
+	}
+	/** Seek TCG history by turn / relative offset / end (offline or post-game). */
+	fftoTcg(target: string | number) {
+		if (!this.tcgHistory.length) return;
+		const canScrub = this.tcgEnded || this.tcgReplayMode || this.isTcgSpectator();
+		if (!canScrub) {
+			// Live spectator catch-up only
+			if (target === 'end' || target === Infinity) this.skipTcgToEnd();
+			return;
+		}
+		const turns: number[] = [];
+		for (let i = 0; i < this.tcgHistory.length; i++) {
+			turns.push(this.turnAtHistoryIndex(i));
+		}
+		const curIdx = this.tcgSeekIndex < 0 ? this.tcgHistory.length - 1 : this.tcgSeekIndex;
+		const curTurn = turns[curIdx] || 0;
+		let wantTurn: number;
+		if (target === 'end' || target === Infinity) {
+			this.tcgSeekIndex = -1;
+			this.replayTcgSeek(this.tcgHistory.length - 1, false);
+			this.skipTcgToEnd();
+			return;
+		}
+		const t = String(target);
+		if (t.startsWith('+')) {
+			wantTurn = curTurn + (parseInt(t.slice(1), 10) || 1);
+		} else if (t.startsWith('-') || (typeof target === 'number' && target < 0)) {
+			wantTurn = Math.max(0, curTurn + (typeof target === 'number' ? target : parseInt(t, 10)));
+		} else {
+			wantTurn = Number(target);
+			if (isNaN(wantTurn)) wantTurn = 0;
+		}
+		let idx = 0;
+		for (let i = 0; i < turns.length; i++) {
+			if (turns[i] <= wantTurn) idx = i;
+			if (turns[i] >= wantTurn && wantTurn > 0) {
+				idx = i;
+				break;
+			}
+		}
+		if (wantTurn <= 0) idx = 0;
+		this.tcgSeekIndex = idx;
+		this.replayTcgSeek(idx, false);
+	}
+	/** Paint history through `throughIndex` instantly (for scrubbing). */
+	replayTcgSeek(throughIndex: number, animate: boolean) {
+		this.tcgPaused = !animate;
+		this.tcgPlaying = false;
+		this.tcgHalt++;
+		this.tcgSnapshot = null;
+		this.tcgFxSnapshot = null;
+		this.tcgEvents = [];
+		this.tcgWait = true;
+		this.tcgQueue = [];
+		let seen = 0;
+		const slice = this.tcgHistory.slice(0, throughIndex + 1);
+		if (!animate) {
+			for (const item of slice) {
+				const events = (item.events || []).filter(ev => {
+					if (typeof ev.seq !== 'number') return true;
+					if (ev.seq <= seen) return false;
+					seen = ev.seq;
+					return true;
+				});
+				this.commitTcg({ ...item, events, animate: false, silent: true, replay: true }, false);
+			}
+			this.update(null);
+			return;
+		}
+		this.tcgQueue = slice.map(item => {
+			const events = (item.events || []).filter(ev => {
+				if (typeof ev.seq !== 'number') return true;
+				if (ev.seq <= seen) return false;
+				seen = ev.seq;
+				return true;
+			});
+			return {
+				...item,
+				events,
+				animate: !!events.length && !PS.prefs.noanim,
+				silent: true,
+				replay: true,
+			};
+		});
+		this.pumpTcg();
+	}
+	buildTcgReplayDownload(): string {
+		let snapshot: TcgSnapshot | null = null;
+		const events: TcgEvent[] = [];
+		let seen = 0;
+		for (const item of this.tcgHistory) {
+			if (item.snapshot && !snapshot) snapshot = item.snapshot;
+			if (item.snapshot && item.snapshot.you == null) snapshot = snapshot || item.snapshot;
+			for (const ev of item.events || []) {
+				if (typeof ev.seq === 'number') {
+					if (ev.seq <= seen) continue;
+					seen = ev.seq;
+				}
+				// Strip private draw ids for download safety
+				if ((ev.type === 'draw' || ev.type === 'find' || ev.type === 'prizeTake') && (ev as any).ids) {
+					const { ids: _ids, ...rest } = ev as any;
+					events.push(rest);
+				} else {
+					events.push(ev);
+				}
+			}
+		}
+		if (!snapshot) {
+			for (let i = this.tcgHistory.length - 1; i >= 0; i--) {
+				if (this.tcgHistory[i].snapshot) {
+					snapshot = this.tcgHistory[i].snapshot!;
+					break;
+				}
+			}
+		}
+		const payload = {
+			format: this.tcgFormatId(),
+			formatName: this.tcgFormatId(),
+			p1: this.tcgP1.name,
+			p2: this.tcgP2.name,
+			winner: this.tcgWinner || '',
+			replay: { snapshot, events },
+		};
+		return `|tcgreplay|${JSON.stringify(payload)}`;
+	}
+	loadTcgReplayPayload(raw: string, titleHint?: string) {
+		let body = raw.trim();
+		if (body.startsWith('|tcgreplay|')) body = body.slice('|tcgreplay|'.length);
+		const data = JSON.parse(body) as {
+			format?: string, formatName?: string, p1?: string, p2?: string, winner?: string,
+			replay?: { snapshot?: TcgSnapshot, events?: TcgEvent[] },
+			snapshot?: TcgSnapshot, events?: TcgEvent[],
+		};
+		const replay = data.replay || { snapshot: data.snapshot, events: data.events };
+		if (!replay?.snapshot) throw new Error('Missing TCG replay snapshot');
+		this.tcgMode = true;
+		this.tcgReplayMode = true;
+		this.tcgEnded = true;
+		this.tcgSide = null;
+		this.tcgWinner = data.winner || null;
+		this.tcgP1 = { id: toID(data.p1 || ''), name: data.p1 || 'Player 1' };
+		this.tcgP2 = { id: toID(data.p2 || ''), name: data.p2 || 'Player 2' };
+		this.title = titleHint ||
+			`[${data.formatName || data.format || 'TCG'}] ${this.tcgP1.name} vs. ${this.tcgP2.name}`;
+		this.connectMode = null;
+		this.connectError = null;
+		this.tcgHistory = [{
+			snapshot: replay.snapshot,
+			events: replay.events || [],
+			animate: false,
+			wait: false,
+			markEnded: true,
+			winner: this.tcgWinner,
+		}];
+		// Split events into turn chunks for scrubbing when possible
+		if (replay.events?.length) {
+			const chunks: BattleRoom['tcgQueue'] = [{
+				snapshot: replay.snapshot,
+				events: [],
+				animate: false,
+				wait: false,
+			}];
+			for (const ev of replay.events) {
+				if (ev.type === 'turn' && chunks[chunks.length - 1].events?.length) {
+					chunks.push({ events: [ev], animate: true, wait: false });
+				} else {
+					(chunks[chunks.length - 1].events ||= []).push(ev);
+				}
+			}
+			chunks[chunks.length - 1].markEnded = true;
+			chunks[chunks.length - 1].winner = this.tcgWinner;
+			this.tcgHistory = chunks;
+		}
+		this.tcgSeekIndex = -1;
+		this.replayTcgSeek(this.tcgHistory.length - 1, false);
+		this.update(null);
 	}
 	/** Beyond this many queued payloads, the oldest are applied instantly so the board never lags minutes behind. */
 	static readonly TCG_MAX_BACKLOG = 12;
@@ -415,32 +649,9 @@ export class BattleRoom extends ChatRoom {
 	/** Play the stored battle again from the first payload. */
 	replayTcg = () => {
 		if (!this.tcgHistory.length) return;
+		this.tcgSeekIndex = -1;
 		this.tcgPaused = false;
-		this.tcgPlaying = false;
-		this.tcgHalt++;
-		this.tcgSnapshot = null;
-		this.tcgFxSnapshot = null;
-		this.tcgEvents = [];
-		this.tcgWait = true;
-		// The history holds both the silent |request| echo and the animated |tcg| payload for
-		// each batch; play every event once.
-		let seen = 0;
-		this.tcgQueue = this.tcgHistory.map(item => {
-			const events = (item.events || []).filter(ev => {
-				if (typeof ev.seq !== 'number') return true;
-				if (ev.seq <= seen) return false;
-				seen = ev.seq;
-				return true;
-			});
-			return {
-				...item,
-				events,
-				animate: !!events.length && !PS.prefs.noanim,
-				silent: true,
-				replay: true,
-			};
-		});
-		this.pumpTcg();
+		this.replayTcgSeek(this.tcgHistory.length - 1, true);
 	};
 
 	override destroy() {
@@ -451,11 +662,32 @@ export class BattleRoom extends ChatRoom {
 
 	loadReplay() {
 		const replayid = this.id.slice(7);
-		Net(`https://replay.pokemonshowdown.com/${replayid}.json`).get().catch(() => '').then(data => {
+		const urls = [
+			`https://${Config.routes.replays}/${replayid}.json`,
+			`https://replay.pokemonshowdown.com/${replayid}.json`,
+		];
+		const tryFetch = (i: number): Promise<string> =>
+			Net(urls[i]).get().catch(() => (i + 1 < urls.length ? tryFetch(i + 1) : ''));
+		tryFetch(0).then(data => {
 			try {
 				const replay = JSON.parse(data);
+				const log = String(replay.log || '');
+				if (isTcgBattleId(this.id) || log.includes('|tcgreplay|') || log.trimStart().startsWith('{')) {
+					this.tcgMode = true;
+					const marker = log.indexOf('|tcgreplay|');
+					const raw = marker >= 0 ? log.slice(marker) :
+						log.trimStart().startsWith('{') ? log : '';
+					if (!raw) throw new Error('no tcg replay');
+					this.loadTcgReplayPayload(raw, `[${replay.format}] ${replay.players?.join(' vs. ') || ''}`);
+					return;
+				}
+				if (!this.battle) {
+					this.connectError = `Battle "${replayid}" not found`;
+					this.update(null);
+					return;
+				}
 				this.title = `[${replay.format}] ${replay.players.join(' vs. ')}`;
-				this.battle.stepQueue = replay.log.split('\n');
+				this.battle.stepQueue = log.split('\n');
 				this.battle.atQueueEnd = false;
 				this.battle.pause();
 				this.battle.seekTurn(0);
@@ -464,7 +696,7 @@ export class BattleRoom extends ChatRoom {
 				this.update(null);
 			} catch {
 				this.connectError = `Battle "${replayid}" not found`;
-				if (!this.battle.stepQueue.length) {
+				if (this.battle?.stepQueue && !this.battle.stepQueue.length) {
 					this.battle.scene.message(
 						`<div class="broadcast-red pad"><strong>${BattleLog.escapeHTML(this.connectError)}</strong></div><br />` +
 						`The battle you're looking for has expired. Battles expire after 15 minutes of inactivity unless they're saved.<br /><br />` +
@@ -492,7 +724,7 @@ class BattleDiv extends preact.Component<{ room: BattleRoom }> {
 	}
 }
 
-class TimerButton extends preact.Component<{ room: BattleRoom, top: number }> {
+class TimerButton extends preact.Component<{ room: BattleRoom, top: number, inline?: boolean }> {
 	timerInterval: number | null = null;
 	override componentWillUnmount() {
 		if (this.timerInterval) {
@@ -506,46 +738,68 @@ class TimerButton extends preact.Component<{ room: BattleRoom, top: number }> {
 		seconds -= minutes * 60;
 		return `${minutes}:${(seconds < 10 ? '0' : '')}${seconds}`;
 	}
+	kicking(room: BattleRoom) {
+		return room.tcgMode ? room.tcgKickingInactive : room.battle?.kickingInactive;
+	}
 	render() {
 		let time = 'Timer';
 		const room = this.props.room;
-		if (!this.timerInterval && room.battle.kickingInactive) {
+		const kicking = this.kicking(room);
+		if (!this.timerInterval && kicking) {
 			this.timerInterval = setInterval(() => {
-				if (room.choices?.isDone()) return;
-				if (typeof room.battle.kickingInactive === 'number' && room.battle.kickingInactive > 1) {
-					room.battle.kickingInactive--;
-					if (room.battle.graceTimeLeft) room.battle.graceTimeLeft--;
-					else if (room.battle.totalTimeLeft) room.battle.totalTimeLeft--;
+				if (room.tcgMode) {
+					if (typeof room.tcgKickingInactive === 'number' && room.tcgKickingInactive > 1) {
+						room.tcgKickingInactive--;
+						if (room.tcgTotalTimeLeft) room.tcgTotalTimeLeft--;
+					}
+				} else {
+					if (room.choices?.isDone()) return;
+					if (typeof room.battle.kickingInactive === 'number' && room.battle.kickingInactive > 1) {
+						room.battle.kickingInactive--;
+						if (room.battle.graceTimeLeft) room.battle.graceTimeLeft--;
+						else if (room.battle.totalTimeLeft) room.battle.totalTimeLeft--;
+					}
 				}
 				this.forceUpdate();
 			}, 1000);
-		} else if (this.timerInterval && !room.battle.kickingInactive) {
+		} else if (this.timerInterval && !kicking) {
 			clearInterval(this.timerInterval);
 			this.timerInterval = null;
 		}
 
-		let timerTicking = (room.battle.kickingInactive &&
-			room.request && room.request.requestType !== "wait" && (room.choices && !room.choices.isDone())) ?
-			' timerbutton-on' : '';
+		let timerTicking = '';
+		if (room.tcgMode) {
+			timerTicking = (room.tcgKickingInactive && room.isTcgPlayer() && !room.tcgWait && !room.tcgEnded) ?
+				' timerbutton-on' : '';
+		} else {
+			timerTicking = (room.battle.kickingInactive &&
+				room.request && room.request.requestType !== "wait" && (room.choices && !room.choices.isDone())) ?
+				' timerbutton-on' : '';
+		}
 
-		if (room.battle.kickingInactive) {
-			const secondsLeft = room.battle.kickingInactive;
-			time = this.secondsToTime(secondsLeft);
+		if (kicking) {
+			const secondsLeft = kicking;
+			time = this.secondsToTime(secondsLeft as number | true);
 			if (secondsLeft !== true) {
-				if (secondsLeft <= 10 && timerTicking) {
+				if ((secondsLeft as number) <= 10 && timerTicking) {
 					timerTicking = ' timerbutton-critical';
 				}
-
-				if (room.battle.totalTimeLeft) {
-					const totalTime = this.secondsToTime(room.battle.totalTimeLeft);
-					time += ` |  ${totalTime} total`;
+				const total = room.tcgMode ? room.tcgTotalTimeLeft : room.battle?.totalTimeLeft;
+				if (total) {
+					// Compact on the TCG HUD so a long "total" line doesn't cover the turn badge.
+					time += this.props.inline ?
+						` · ${this.secondsToTime(total)}` :
+						` |  ${this.secondsToTime(total)} total`;
 				}
 			}
 		}
 
 		return <button
-			style={{ position: "absolute", right: '10px', top: `${this.props.top}px` }}
-			data-href="battletimer" class={`button${timerTicking}`} role="timer"
+			style={this.props.inline ? undefined : { position: "absolute", right: '10px', top: `${this.props.top}px` }}
+			data-href="battletimer" class={`button timerbutton${timerTicking}`} role="timer"
+			title={this.props.inline && kicking && typeof kicking === 'number' ?
+				`Turn ${this.secondsToTime(kicking)}${room.tcgTotalTimeLeft ? ` · Total ${this.secondsToTime(room.tcgTotalTimeLeft)}` : ''}` :
+				undefined}
 		>
 			<i class="fa fa-hourglass-start" aria-hidden></i> {time}
 		</button>;
@@ -558,7 +812,31 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 	static readonly Model = BattleRoom;
 	static handleDrop(ev: DragEvent) {
 		const file = ev.dataTransfer?.files?.[0];
-		if (file?.type === 'text/html') {
+		if (!file) return;
+		const isJson = file.type === 'application/json' || /\.json$/i.test(file.name);
+		const isHtml = file.type === 'text/html' || /\.html?$/i.test(file.name);
+		if (isJson) {
+			let roomNum = 1;
+			for (; roomNum < 100; roomNum++) {
+				if (!PS.rooms[`battle-tcguploaded-${roomNum}`]) break;
+			}
+			file.text().then(text => {
+				try {
+					const id = `battle-tcguploaded-${roomNum}` as RoomID;
+					PS.join(id);
+					const room = PS.rooms[id] as BattleRoom;
+					if (!room) return;
+					room.tcgMode = true;
+					room.connectMode = null;
+					const raw = text.includes('|tcgreplay|') ? text : `|tcgreplay|${text.trim().startsWith('{') ? text : JSON.stringify(JSON.parse(text))}`;
+					room.loadTcgReplayPayload(raw, file.name.replace(/\.json$/i, ''));
+				} catch (err) {
+					PS.alert(`Unrecognized TCG replay JSON: ${err}`);
+				}
+			});
+			return true;
+		}
+		if (isHtml) {
 			let roomNum = 1;
 			for (; roomNum < 100; roomNum++) {
 				if (!PS.rooms[`battle-uploaded-${roomNum}`]) break;
@@ -795,18 +1073,44 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 			this.applyTcgPayload(JSON.parse(args[1]), true);
 			return;
 		case 'player': {
-			// |player|p1|Name|avatar|rating| — silent (same as battle text parser)
+			// |player|p1|Name|avatar|rating|
 			const side = args[1] || '';
 			const name = args[2] || '';
-			if (name && room.tcgSnapshot?.players) {
-				const idx = side === 'p1' ? 0 : side === 'p2' ? 1 : -1;
-				if (idx >= 0 && room.tcgSnapshot.players[idx]) {
-					room.tcgSnapshot.players[idx].name = name;
-					room.update(null);
-				}
+			const idx = side === 'p1' ? 0 : side === 'p2' ? 1 : -1;
+			if (name && idx === 0) room.tcgP1 = { id: toID(name), name };
+			if (name && idx === 1) room.tcgP2 = { id: toID(name), name };
+			if (name && room.tcgSnapshot?.players && idx >= 0 && room.tcgSnapshot.players[idx]) {
+				room.tcgSnapshot.players[idx].name = name;
+				room.update(null);
 			}
 			return;
 		}
+		case 'inactive': {
+			room.log?.add(args);
+			const msg = args[1] || '';
+			if (msg.startsWith('Time left: ')) {
+				const [time, totalTime] = msg.split(' | ');
+				room.tcgKickingInactive = parseInt(time.slice(11), 10) || true;
+				room.tcgTotalTimeLeft = parseInt(totalTime || '', 10) || 0;
+				if (room.tcgTotalTimeLeft === room.tcgKickingInactive) room.tcgTotalTimeLeft = 0;
+			} else if (msg.startsWith('You have ')) {
+				room.tcgKickingInactive = parseInt(msg.slice(9), 10) || true;
+			} else if (msg.includes('Battle timer is ON')) {
+				room.tcgKickingInactive = true;
+			} else if (msg.endsWith(' seconds left this turn.') || msg.endsWith(' seconds left.')) {
+				const hasIndex = msg.indexOf(' has ');
+				if (hasIndex >= 0 && toID(msg.slice(0, hasIndex)) === PS.user.userid) {
+					room.tcgKickingInactive = parseInt(msg.slice(hasIndex + 5), 10) || true;
+				}
+			}
+			room.update(null);
+			return;
+		}
+		case 'inactiveoff':
+			room.tcgKickingInactive = false;
+			room.log?.add(args);
+			room.update(null);
+			return;
 		case 'win': case 'tie': {
 			const winnerName = args[0] === 'win' ? (args[1] || '').trim() : '';
 			const endingAlready = room.tcgEnded ||
@@ -832,9 +1136,15 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 			return;
 		}
 		case 'html': case 'raw': case 'c': case 'c:': case 'chat': case 'chatmsg':
-		case 'inactive': case 'error': case 'bigerror': case 'tier':
+		case 'error': case 'bigerror': case 'tier':
 			room.log?.add(args);
 			if (args[0] === 'error') room.update(null);
+			return;
+		case 'cantleave':
+			room.requireForfeit = true;
+			return;
+		case 'allowleave':
+			room.requireForfeit = false;
 			return;
 		case '-message':
 			room.log?.add(['chatmsg', args.slice(1).join('|')]);
@@ -863,6 +1173,26 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		if (data.snapshot && !data.snapshot.format?.energyZone &&
 			!data.snapshot.players?.some(p => p?.energyZone)) {
 			loadPaperNames();
+		}
+		if (data.snapshot?.you != null) {
+			room.tcgSide = data.snapshot.you as 0 | 1;
+			room.tcgViewpoint = room.tcgSide;
+		}
+		if (data.snapshot?.players?.[0]?.name) {
+			room.tcgP1 = {
+				id: toID(data.snapshot.players[0].id || data.snapshot.players[0].name),
+				name: data.snapshot.players[0].name,
+			};
+		}
+		if (data.snapshot?.players?.[1]?.name) {
+			room.tcgP2 = {
+				id: toID(data.snapshot.players[1].id || data.snapshot.players[1].name),
+				name: data.snapshot.players[1].name,
+			};
+		}
+		if (PS.prefs.autotimer && room.isTcgPlayer() && !room.tcgKickingInactive && !room.autoTimerActivated) {
+			this.send('/timer on');
+			room.autoTimerActivated = true;
 		}
 		const wait = data.wait != null ? data.wait : (data.snapshot ? !data.snapshot.actions?.length : undefined);
 		const ended = data.snapshot?.status === 'over';
@@ -1721,18 +2051,123 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 	handleDownloadReplay = (e: MouseEvent) => {
 		let room = this.props.room;
 		const target = e.currentTarget as HTMLAnchorElement;
-		// download replay
-		let filename = (room.battle.tier || 'Battle').replace(/[^A-Za-z0-9]/g, '');
 		let date = new Date();
-		filename += `-${date.getFullYear()}`;
-		filename += `-${date.getMonth() >= 9 ? '' : '0'}${date.getMonth() + 1}`;
-		filename += `-${date.getDate() >= 10 ? '' : '0'}${date.getDate()}`;
+		const stamp = `${date.getFullYear()}-${date.getMonth() >= 9 ? '' : '0'}${date.getMonth() + 1}` +
+			`-${date.getDate() >= 10 ? '' : '0'}${date.getDate()}`;
+		if (room.tcgMode) {
+			const filename = `${room.tcgFormatId()}-${stamp}-${toID(room.tcgP1.name)}-${toID(room.tcgP2.name)}`;
+			const blob = new Blob([room.buildTcgReplayDownload()], { type: 'application/json' });
+			target.href = URL.createObjectURL(blob);
+			target.download = filename + '.json';
+			e.stopPropagation();
+			return;
+		}
+		let filename = (room.battle.tier || 'Battle').replace(/[^A-Za-z0-9]/g, '');
+		filename += `-${stamp}`;
 		filename += '-' + toID(room.battle.p1.name);
 		filename += '-' + toID(room.battle.p2.name);
 		target.href = window.BattleLog.createReplayFileHref(room);
 		target.download = filename + '.html';
 		e.stopPropagation();
 	};
+
+	renderTcgControls() {
+		const room = this.props.room;
+		const ended = room.tcgEnded || room.tcgReplayMode;
+		const isPlayer = room.isTcgPlayer();
+		const isSpec = room.isTcgSpectator();
+		const atEnd = room.tcgSeekIndex < 0 && !room.tcgQueue.length;
+		const atStart = room.tcgSeekIndex === 0 ||
+			(room.tcgSeekIndex < 0 && room.tcgHistory.length <= 1 && !room.tcgQueue.length);
+		const canScrub = ended || (isSpec && !ended);
+		const showTimer = isPlayer && !ended;
+		const showSpecLive = !ended && isSpec;
+		const showScrub = ended && canScrub;
+		const showEndPlayer = ended && isPlayer && !room.tcgReplayMode;
+		const showEndSpec = ended && isSpec;
+		if (!showTimer && !showSpecLive && !showScrub && !showEndPlayer && !showEndSpec) return null;
+
+		const mode = ended ? 'ended' : showSpecLive ? 'spec' : 'live';
+		return <div
+			class={`tcg-chrome ${mode}`}
+			role="complementary"
+			aria-label="TCG Battle Controls"
+		>
+			{showTimer && <TimerButton room={room} top={0} inline />}
+			{showSpecLive && <div class="tcg-chrome-group" aria-label="Spectator controls">
+				{room.tcgPaused || !room.tcgPlaying ? (
+					<button class="button" data-cmd="/play" title="Play">
+						<i class="fa fa-play" aria-hidden></i>
+					</button>
+				) : (
+					<button class="button" data-cmd="/pause" title="Pause">
+						<i class="fa fa-pause" aria-hidden></i>
+					</button>
+				)}
+				<button class="button" data-cmd="/ffto end" title="Skip to end">
+					<i class="fa fa-fast-forward" aria-hidden></i>
+				</button>
+				<button class="button" data-cmd="/switchsides" title="Switch viewpoint">
+					<i class="fa fa-random" aria-hidden></i>
+				</button>
+			</div>}
+			{ended && <div class="tcg-chrome-bar">
+				{showEndPlayer && <div class="tcg-chrome-group" aria-label="Match controls">
+					<button class="button" data-cmd="/close">Menu</button>
+					{!!room.tcgOpponentId() && <button
+						class="button"
+						data-cmd={`/closeand /challenge ${room.tcgOpponentId()},${room.tcgFormatId()}`}
+					>
+						Rematch
+					</button>}
+					<a
+						onClick={this.handleDownloadReplay}
+						href={`//${Config.routes.replays}/download`}
+						class="button replayDownloadButton"
+						title="Download replay"
+					>
+						<i class="fa fa-download" aria-hidden></i>
+					</a>
+					{!room.tcgReplayMode && <button
+						class="button" data-cmd="/savereplay" title="Upload and share replay"
+					>
+						<i class="fa fa-upload" aria-hidden></i>
+					</button>}
+				</div>}
+				{showEndSpec && !showEndPlayer && <div class="tcg-chrome-group" aria-label="Replay download">
+					<a
+						onClick={this.handleDownloadReplay}
+						href={`//${Config.routes.replays}/download`}
+						class="button replayDownloadButton"
+						title="Download replay"
+					>
+						<i class="fa fa-download" aria-hidden></i>
+					</a>
+				</div>}
+				{showScrub && <div class="tcg-chrome-group" aria-label="Replay controls">
+					<button class="button" data-cmd="/play" title="Replay">
+						<i class="fa fa-undo" aria-hidden></i>
+					</button>
+					<button class={"button" + (atStart ? " disabled" : "")} data-cmd="/ffto 0" title="First turn">
+						<i class="fa fa-fast-backward" aria-hidden></i>
+					</button>
+					<button class={"button" + (atStart ? " disabled" : "")} data-cmd="/ffto -1" title="Previous turn">
+						<i class="fa fa-step-backward" aria-hidden></i>
+					</button>
+					<button class={"button" + (atEnd ? " disabled" : "")} data-cmd="/ffto +1" title="Next turn">
+						<i class="fa fa-step-forward" aria-hidden></i>
+					</button>
+					<button class={"button" + (atEnd ? " disabled" : "")} data-cmd="/ffto end" title="Skip to end">
+						<i class="fa fa-fast-forward" aria-hidden></i>
+					</button>
+					<button class="button" data-cmd="/ffto" title="Go to turn">Turn</button>
+					<button class="button" data-cmd="/switchsides" title="Switch viewpoint">
+						<i class="fa fa-random" aria-hidden></i>
+					</button>
+				</div>}
+			</div>}
+		</div>;
+	}
 
 	override render() {
 		this.updateLayout();
@@ -1897,9 +2332,11 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		const boardW = layout === 'top-and-bottom' ?
 			Math.max(battleWidth, Math.min(room.width, 960)) :
 			Math.max(battleWidth, room.width - chatWidth);
-		const board = room.tcgSnapshot ? <TcgBoard
-			snapshot={room.tcgSnapshot}
-			fxSnapshot={room.tcgFxSnapshot}
+		const viewSnap = room.tcgViewSnapshot(room.tcgSnapshot);
+		const viewFx = room.tcgViewSnapshot(room.tcgFxSnapshot);
+		const board = viewSnap ? <TcgBoard
+			snapshot={viewSnap}
+			fxSnapshot={viewFx}
 			events={room.tcgEvents}
 			fxKey={room.tcgFxKey}
 			halt={room.tcgHalt}
@@ -1908,12 +2345,14 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 			onReplay={room.replayTcg}
 			onSkip={room.skipTcgToEnd}
 			waiting={room.tcgWait}
-			ended={room.tcgEnded}
+			ended={room.tcgEnded || room.tcgReplayMode}
+			showReplayControls={false}
 			winnerName={room.tcgWinner}
 			onAct={this.sendTcgAction}
 			onEvent={room.onTcgEvent}
 			onFxDone={room.onTcgFxDone}
 		/> : <div class="tcg-table"><p class="tcg-waiting">Shuffling…</p></div>;
+		const controls = this.renderTcgControls();
 
 		// Phone / narrow: board fills the room; toggle to chat (same idea as gen battles)
 		const isPhone = room.width < 640;
@@ -1926,8 +2365,9 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 						'position:absolute;inset:0;display:flex;flex-direction:column;' +
 						'padding:0;box-sizing:border-box;z-index:1;min-height:0;'}
 				>
-					<div style="flex:1 1 0;min-height:0;min-width:0;width:100%;height:100%;display:flex;">
+					<div class="tcg-board-shell">
 						{board}
+						{controls}
 					</div>
 					{this.renderConnectError()}
 				</div>
@@ -1956,8 +2396,12 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 
 		if (layout === 'top-and-bottom') {
 			return <PSPanelWrapper room={room} focusClick noScroll="hidden">
-				<div style={`position:relative;height:${battleHeight}px;width:${boardW}px;margin:0 auto;display:flex`}>
+				<div
+					class="tcg-board-shell"
+					style={`height:${battleHeight}px;width:${boardW}px;margin:0 auto;`}
+				>
 					{board}
+					{controls}
 				</div>
 				<ChatLog
 					class="battle-log hasuserlist" room={room} top={battleHeight} noSubscription hasPreempt
@@ -1971,11 +2415,11 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 
 		return <PSPanelWrapper room={room} focusClick noScroll="hidden">
 			<div
-				class="scrollable-battle-container"
-				style={`width:${boardW}px;height:100%;display:flex;flex-direction:column;` +
-					`padding:4px;box-sizing:border-box`}
+				class="tcg-board-shell tcg-board-shell-side"
+				style={`width:${boardW}px;`}
 			>
-				<div style="flex:1 1 auto;min-height:0;display:flex">{board}</div>
+				{board}
+				{controls}
 				{this.renderConnectError()}
 			</div>
 			<ChatLog

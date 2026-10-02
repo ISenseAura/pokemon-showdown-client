@@ -46,16 +46,27 @@
 /* TCG deck builder — inherits PS room / popup theme colors */
 
 .tcg-deck-builder {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-height: calc(100vh - 160px);
+	padding: 0 8px 16px;
+	color: inherit;
+}
+.tcg-deck-tabs {
+	margin: 0;
+	flex-shrink: 0;
+}
+.tcg-deck-main {
 	/* Deck composition first (left / top), card browser second. */
 	display: grid;
 	grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
 	gap: 12px;
-	min-height: calc(100vh - 160px);
-	padding: 0 8px 16px;
 	align-items: stretch;
-	color: inherit;
+	flex: 1;
+	min-height: 0;
 }
-.tcg-deck-builder.narrow {
+.tcg-deck-builder.narrow .tcg-deck-main {
 	grid-template-columns: 1fr;
 }
 .tcg-deck-builder.narrow .tcg-deck-rail {
@@ -63,6 +74,52 @@
 }
 .tcg-deck-builder.narrow .tcg-deck-lists {
 	min-height: 0;
+}
+
+.tcg-deck-import {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	flex: 1;
+	min-height: 0;
+	max-width: 720px;
+}
+.tcg-deck-import-help {
+	margin: 0;
+	font-size: 12px;
+	opacity: 0.85;
+}
+.tcg-deck-import-help code {
+	font-size: 11px;
+}
+.tcg-deck-import-box {
+	width: 100%;
+	box-sizing: border-box;
+	min-height: 280px;
+	flex: 1;
+	font-family: Consolas, "Andale Mono", monospace;
+	font-size: 12px;
+	line-height: 1.4;
+	resize: vertical;
+}
+.tcg-deck-import-actions {
+	margin: 0;
+	text-align: left;
+}
+.tcg-deck-import-msgs {
+	font-size: 12px;
+}
+.tcg-deck-import-warn {
+	color: #aa7711;
+}
+.dark .tcg-deck-import-warn {
+	color: #ddbb44;
+}
+.tcg-deck-import-err {
+	color: #cc2222;
+}
+.dark .tcg-deck-import-err {
+	color: #ee6666;
 }
 
 .tcg-deck-browser {
@@ -449,7 +506,7 @@
 }
 
 @media (max-width: 700px) {
-	.tcg-deck-builder {
+	.tcg-deck-main {
 		grid-template-columns: 1fr;
 	}
 	.tcg-deck-rail {

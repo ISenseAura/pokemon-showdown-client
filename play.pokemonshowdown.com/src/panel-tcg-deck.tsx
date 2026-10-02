@@ -5,12 +5,13 @@ import preact from "../js/lib/preact";
 import { PS, type Team } from "./client-main";
 import {
 	TCG_DECK_RULES, allTcgCards, cardLegalInFormat, copyMaxFor, deckCounts, deckProblemsClient,
-	getTcgCard, groupDeck, loadTcgCardIndex, packTcgDeck, showdownFormatFor, tcgDeckFormatOf,
-	unpackTcgDeck, type TcgCardRow, type TcgDeckFormat,
+	exportTcgDeck, getTcgCard, groupDeck, importTcgDeck, loadTcgCardIndex, packTcgDeck,
+	showdownFormatFor, tcgDeckFormatOf, unpackTcgDeck, type TcgCardRow, type TcgDeckFormat,
 } from "./battle-tcg-deck";
 import { toID } from "./battle-dex";
 
 type SuperFilter = '' | 'P' | 'T' | 'E';
+type EditorMode = 'deck' | 'import';
 
 type ValidateResult = {
 	ok: boolean,
@@ -64,6 +65,7 @@ export class TcgDeckEditor extends preact.Component<{
 }> {
 	override state = {
 		ready: false,
+		mode: 'deck' as EditorMode,
 		q: '',
 		super: '' as SuperFilter,
 		type: '' as string,
@@ -73,9 +75,15 @@ export class TcgDeckEditor extends preact.Component<{
 		serverErrors: null as string[] | null,
 		validating: false,
 		preview: null as TcgCardRow | null,
+		importText: '',
+		importDirty: false,
+		importErrors: null as string[] | null,
+		importWarnings: null as string[] | null,
+		copied: false,
 	};
 
 	searchTimer: number | null = null;
+	importBox: HTMLTextAreaElement | null = null;
 
 	override componentDidMount() {
 		const format = tcgDeckFormatOf(this.props.team.format);
@@ -171,6 +179,72 @@ export class TcgDeckEditor extends preact.Component<{
 		this.setState({ validating: false, serverErrors: res.errors || [] });
 	};
 
+	setMode = (mode: EditorMode) => {
+		if (mode === this.state.mode) return;
+		if (mode === 'import') {
+			this.setState({
+				mode,
+				importText: exportTcgDeck(this.state.ids),
+				importDirty: false,
+				importErrors: null,
+				importWarnings: null,
+				copied: false,
+				preview: null,
+			});
+			return;
+		}
+		this.setState({ mode, importErrors: null, importWarnings: null, copied: false });
+	};
+
+	onImportInput = (ev: Event) => {
+		const importText = (ev.currentTarget as HTMLTextAreaElement).value;
+		const importDirty = importText !== exportTcgDeck(this.state.ids);
+		this.setState({ importText, importDirty, importErrors: null, importWarnings: null });
+	};
+
+	applyImport = () => {
+		const result = importTcgDeck(this.state.importText, this.state.format);
+		if (result.errors.length && !result.ids.length) {
+			this.setState({ importErrors: result.errors, importWarnings: result.warnings });
+			return;
+		}
+		this.commit(result.ids);
+		this.setState({
+			mode: 'deck',
+			importText: exportTcgDeck(result.ids),
+			importDirty: false,
+			importErrors: result.errors.length ? result.errors : null,
+			importWarnings: result.warnings.length ? result.warnings : null,
+		});
+		if (result.errors.length || result.warnings.length) {
+			const bits = [
+				...result.warnings,
+				...result.errors,
+			].slice(0, 8);
+			PS.alert(bits.join('\n') + (result.errors.length + result.warnings.length > 8 ? '\n…' : ''));
+		}
+	};
+
+	resetImport = () => {
+		this.setState({
+			importText: exportTcgDeck(this.state.ids),
+			importDirty: false,
+			importErrors: null,
+			importWarnings: null,
+		});
+	};
+
+	copyExport = async () => {
+		const text = this.state.importDirty ? this.state.importText : exportTcgDeck(this.state.ids);
+		try {
+			await navigator.clipboard.writeText(text);
+			this.setState({ copied: true });
+			window.setTimeout(() => this.setState({ copied: false }), 1500);
+		} catch {
+			PS.alert('Could not copy to clipboard. Select the text and copy manually.');
+		}
+	};
+
 	filteredCards(): TcgCardRow[] {
 		if (!this.state.ready) return [];
 		const { q, super: sup, type, reg, format } = this.state;
@@ -195,7 +269,32 @@ export class TcgDeckEditor extends preact.Component<{
 	}
 
 	override render() {
-		const { ids, format, ready, validating, serverErrors, preview } = this.state;
+		const { ids, format, ready, validating, serverErrors, preview, mode } = this.state;
+
+		return <div class={`tcg-deck-builder${this.props.narrow ? ' narrow' : ''}`}>
+			<ul class="tabbar unpadded-tabbar tcg-deck-tabs">
+				<li>
+					<button type="button" class={`button${mode === 'deck' ? ' cur' : ''}`} onClick={() => this.setMode('deck')}>
+						Deck
+					</button>
+				</li>
+				<li>
+					<button
+						type="button"
+						class={`button button-last${mode === 'import' ? ' cur' : ''}`}
+						onClick={() => this.setMode('import')}
+					>
+						Import/Export
+					</button>
+				</li>
+			</ul>
+			{mode === 'import' ? this.renderImportExport() : this.renderDeckBuilder()}
+			{preview && mode === 'deck' && this.renderPreviewModal(preview, ids, format)}
+		</div>;
+	}
+
+	renderDeckBuilder() {
+		const { ids, format, ready, validating, serverErrors } = this.state;
 		const rules = TCG_DECK_RULES[format];
 		const problems = ready ? deckProblemsClient(ids, format) : [];
 		const counts = deckCounts(ids);
@@ -206,7 +305,7 @@ export class TcgDeckEditor extends preact.Component<{
 		const results = this.filteredCards();
 		const countCls = ids.length === rules.deckSize ? 'ok' : ids.length > rules.deckSize ? 'over' : 'short';
 
-		return <div class={`tcg-deck-builder${this.props.narrow ? ' narrow' : ''}`}>
+		return <div class="tcg-deck-main">
 			{/* Your deck first: top when stacked, left on wide screens. */}
 			<aside class="tcg-deck-rail">
 				<div class="tcg-deck-rail-head">
@@ -317,8 +416,41 @@ export class TcgDeckEditor extends preact.Component<{
 					</div>
 				)}
 			</div>
+		</div>;
+	}
 
-			{preview && this.renderPreviewModal(preview, ids, format)}
+	renderImportExport() {
+		const { importText, importDirty, importErrors, importWarnings, copied, ready, ids } = this.state;
+		const text = importDirty || importText ? importText : (ready ? exportTcgDeck(ids) : '');
+		return <div class="tcg-deck-import">
+			<p class="tcg-deck-import-help">
+				Paste a deck list below, or copy this export. Accepts Limitless-style lines
+				(<code>4 Abomasnow sv10-60</code>), bare card ids, or a JSON id array.
+			</p>
+			<textarea
+				class="textbox tcg-deck-import-box"
+				value={text}
+				onInput={this.onImportInput}
+				spellcheck={false}
+				ref={el => { this.importBox = el; }}
+			/>
+			<p class="buttonbar tcg-deck-import-actions">
+				<button type="button" class="button" onClick={this.applyImport} disabled={!ready}>
+					<i class="fa fa-upload" aria-hidden></i> Import
+				</button> {}
+				<button type="button" class="button" onClick={this.copyExport} disabled={!ready}>
+					<i class="fa fa-clipboard" aria-hidden></i> {copied ? 'Copied!' : 'Copy'}
+				</button> {}
+				{importDirty && <button type="button" class="button" onClick={this.resetImport}>
+					Reset
+				</button>}
+			</p>
+			{(importWarnings?.length || importErrors?.length) && (
+				<div class="tcg-deck-import-msgs">
+					{importWarnings?.map(w => <div class="tcg-deck-import-warn">{w}</div>)}
+					{importErrors?.map(e => <div class="tcg-deck-import-err">{e}</div>)}
+				</div>
+			)}
 		</div>;
 	}
 

@@ -68,7 +68,22 @@ export const TCG_DECK_RULES: { [id in TcgDeckFormat]: TcgDeckRules } = {
 
 let cardIndex: TcgCardRow[] | null = null;
 let byId: Map<string, TcgCardRow> | null = null;
+let byIdLower: Map<string, TcgCardRow> | null = null;
+let byName: Map<string, TcgCardRow[]> | null = null;
 let loadPromise: Promise<TcgCardRow[]> | null = null;
+
+function indexCards(rows: TcgCardRow[]) {
+	cardIndex = rows;
+	byId = new Map(rows.map(c => [c.id, c]));
+	byIdLower = new Map(rows.map(c => [c.id.toLowerCase(), c]));
+	byName = new Map();
+	for (const c of rows) {
+		const key = toID(c.n);
+		const list = byName.get(key) || [];
+		list.push(c);
+		byName.set(key, list);
+	}
+}
 
 export function isTcgFormatId(format: string | undefined | null): boolean {
 	const id = toID(format || '');
@@ -144,22 +159,21 @@ export function loadTcgCardIndex(): Promise<TcgCardRow[]> {
 			return r.json();
 		})
 		.then((rows: TcgCardRow[]) => {
-			cardIndex = rows;
-			byId = new Map(rows.map(c => [c.id, c]));
+			indexCards(rows);
 			return rows;
 		})
 		.catch(err => {
 			loadPromise = null;
 			console.warn(err);
-			cardIndex = [];
-			byId = new Map();
-			return cardIndex;
+			indexCards([]);
+			return cardIndex!;
 		});
 	return loadPromise;
 }
 
 export function getTcgCard(id: string): TcgCardRow | undefined {
-	return byId?.get(id);
+	if (!id) return undefined;
+	return byId?.get(id) || byIdLower?.get(id.toLowerCase());
 }
 
 export function allTcgCards(): TcgCardRow[] {
@@ -270,4 +284,168 @@ export function deckPreviewCards(ids: string[], limit = 6): TcgCardRow[] {
 		else other.push(c);
 	}
 	return poke.concat(other).slice(0, limit);
+}
+
+const SECTION_LABEL: { [s: string]: string } = {
+	P: 'Pokémon',
+	T: 'Trainer',
+	E: 'Energy',
+};
+
+/** Human-readable deck list (Limitless-style) for Import/Export. */
+export function exportTcgDeck(ids: string[]): string {
+	const lines = groupDeck(ids);
+	const out: string[] = [];
+	const sections = ['P', 'T', 'E'];
+	for (let i = 0; i < sections.length; i++) {
+		const s = sections[i];
+		const group = [];
+		for (let j = 0; j < lines.length; j++) {
+			if ((lines[j].card?.s || '?') === s) group.push(lines[j]);
+		}
+		let count = 0;
+		for (let j = 0; j < group.length; j++) count += group[j].n;
+		out.push(`${SECTION_LABEL[s]}: ${count}`);
+		for (let j = 0; j < group.length; j++) {
+			const l = group[j];
+			out.push(`${l.n} ${l.card?.n || l.id} ${l.id}`);
+		}
+		out.push('');
+	}
+	const unknown = [];
+	for (let i = 0; i < lines.length; i++) {
+		const l = lines[i];
+		if (!l.card || !SECTION_LABEL[l.card.s]) unknown.push(l);
+	}
+	if (unknown.length) {
+		let count = 0;
+		for (let i = 0; i < unknown.length; i++) count += unknown[i].n;
+		out.push('Other: ' + count);
+		for (let i = 0; i < unknown.length; i++) {
+			const l = unknown[i];
+			out.push(`${l.n} ${l.card?.n || l.id} ${l.id}`);
+		}
+		out.push('');
+	}
+	return out.join('\n').trimEnd() + '\n';
+}
+
+function preferLegal(cards: TcgCardRow[], format: TcgDeckFormat): TcgCardRow[] {
+	const legal = cards.filter(c => cardLegalInFormat(c, format) || (format === 'standard' && c.be));
+	return legal.length ? legal : cards;
+}
+
+/** Resolve a pasted card token to a catalog id. */
+export function resolveImportCard(
+	rest: string,
+	format: TcgDeckFormat
+): { id: string, warning?: string } | null {
+	rest = rest.trim().replace(/\s+/g, ' ');
+	if (!rest) return null;
+
+	// Bare card id
+	const direct = getTcgCard(rest);
+	if (direct) return { id: direct.id };
+
+	const parts = rest.split(' ');
+	// Trailing card id: "Abomasnow sv10-60"
+	if (parts.length >= 2) {
+		const last = parts[parts.length - 1];
+		const byTail = getTcgCard(last);
+		if (byTail) return { id: byTail.id };
+
+		// Trailing SET NUM: "Charizard ex OBF 125" → obf-125
+		if (parts.length >= 3) {
+			const set = parts[parts.length - 2];
+			const num = parts[parts.length - 1];
+			if (/^[A-Za-z0-9]+$/.test(set) && /^[A-Za-z0-9]+$/.test(num)) {
+				const candidates = [
+					`${set}-${num}`,
+					`${set.toLowerCase()}-${num}`,
+					`${set}-${num.replace(/^0+/, '') || '0'}`,
+					`${set.toLowerCase()}-${(num.replace(/^0+/, '') || '0')}`,
+					`${set}-${num.padStart(3, '0')}`,
+				];
+				for (const id of candidates) {
+					const c = getTcgCard(id);
+					if (c) return { id: c.id };
+				}
+			}
+		}
+	}
+
+	// Name only (optionally with ignored trailing set tokens that failed above)
+	let name = rest;
+	if (parts.length >= 3 && /^[A-Za-z0-9]+$/.test(parts[parts.length - 2]) && /^[A-Za-z0-9]+$/.test(parts[parts.length - 1])) {
+		name = parts.slice(0, -2).join(' ');
+	} else if (parts.length >= 2 && getTcgCard(parts[parts.length - 1])) {
+		name = parts.slice(0, -1).join(' ');
+	}
+
+	const matches = preferLegal(byName?.get(toID(name)) || [], format);
+	if (!matches.length) return null;
+	if (matches.length === 1) return { id: matches[0].id };
+	// Prefer higher regulation mark, then stable id order
+	matches.sort((a, b) => (b.r || '').localeCompare(a.r || '') || a.id.localeCompare(b.id));
+	return {
+		id: matches[0].id,
+		warning: `Multiple prints of ${matches[0].n}; using ${matches[0].id}`,
+	};
+}
+
+export type TcgImportResult = {
+	ids: string[],
+	errors: string[],
+	warnings: string[],
+};
+
+/** Parse Limitless-style text, JSON id arrays, or bare card-id lists. */
+export function importTcgDeck(text: string, format: TcgDeckFormat): TcgImportResult {
+	const trimmed = String(text || '').trim();
+	if (!trimmed) return { ids: [], errors: [], warnings: [] };
+
+	if (trimmed.startsWith('[')) {
+		const ids = unpackTcgDeck(trimmed);
+		const errors: string[] = [];
+		for (const id of ids) {
+			if (!getTcgCard(id)) errors.push(`Unknown card id: ${id}`);
+		}
+		return { ids, errors, warnings: [] };
+	}
+
+	const ids: string[] = [];
+	const errors: string[] = [];
+	const warnings: string[] = [];
+
+	for (const raw of trimmed.split(/\r?\n/)) {
+		let line = raw.trim();
+		if (!line) continue;
+		if (/^(pok[eé]mon|trainer|energy|other)\s*:/i.test(line)) continue;
+		if (/^===/.test(line) || /^format\s*:/i.test(line) || /^total\s*:/i.test(line)) continue;
+		// Strip leading bullets / dashes
+		line = line.replace(/^[-*•]\s*/, '');
+
+		let qty = 1;
+		let rest = line;
+		const qm = /^(\d+)x?\s+(.+)$/i.exec(line);
+		if (qm) {
+			qty = Math.max(1, Math.min(99, parseInt(qm[1], 10) || 1));
+			rest = qm[2].trim();
+		} else if (/^[A-Za-z0-9][\w.-]*-\w+$/.test(line) || getTcgCard(line)) {
+			rest = line;
+		} else if (!/\s/.test(line)) {
+			// single token that isn't an id — try as name with qty 1
+			rest = line;
+		}
+
+		const resolved = resolveImportCard(rest, format);
+		if (!resolved) {
+			errors.push(`Could not find card: ${rest}`);
+			continue;
+		}
+		if (resolved.warning) warnings.push(resolved.warning);
+		for (let i = 0; i < qty; i++) ids.push(resolved.id);
+	}
+
+	return { ids, errors, warnings };
 }
