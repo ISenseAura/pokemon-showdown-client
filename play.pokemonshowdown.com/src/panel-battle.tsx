@@ -23,7 +23,10 @@ import type { Args } from "./battle-text-parser";
 import { ModifiableValue } from "./battle-tooltips";
 import { Net } from "./client-connection";
 import { BattleLog } from "./battle-log";
-import { TcgBoard, isTcgBattleId, chatEntryForEvent, chatHtmlForEntry, noteTcgMons, loadPaperNames, type TcgAction, type TcgEvent, type TcgPokemonView, type TcgSnapshot } from "./battle-tcg";
+import {
+	TcgBoard, isTcgBattleId, chatEntryForEvent, chatHtmlForEntry, noteTcgMons, loadPaperNames, applyTcgEvents,
+	type TcgAction, type TcgEvent, type TcgPokemonView, type TcgSnapshot,
+} from "./battle-tcg";
 
 type BattleDesc = {
 	id: RoomID,
@@ -187,6 +190,8 @@ export class BattleRoom extends ChatRoom {
 	tcgQueue: {
 		snapshot?: TcgSnapshot,
 		events?: TcgEvent[],
+		/** Legal actions for this seat; present even when the server omits the board snapshot. */
+		actions?: TcgAction[],
 		wait?: boolean,
 		animate: boolean,
 		/** |request| repeats events that |tcg| will log. Don't write them again. */
@@ -585,7 +590,11 @@ export class BattleRoom extends ChatRoom {
 			return;
 		}
 		this.tcgPlaying = true;
-		this.tcgFxSnapshot = item.snapshot || null;
+		// Soft batches omit the board; predict the post-batch state so FX overlays (energy, etc.) resolve.
+		this.tcgFxSnapshot = item.snapshot || (
+			this.tcgSnapshot && item.events?.length ?
+				applyTcgEvents(this.tcgSnapshot, item.events, item.actions) : null
+		);
 		if (!this.tcgSnapshot && item.snapshot) this.tcgSnapshot = item.snapshot;
 		this.tcgEvents = item.events || [];
 		this.tcgFxKey++;
@@ -597,6 +606,7 @@ export class BattleRoom extends ChatRoom {
 		if (item.snapshot) {
 			if (item.snapshot.format) this.tcgFormat = item.snapshot.format;
 			else if (this.tcgFormat) item.snapshot = { ...item.snapshot, format: this.tcgFormat };
+			if (item.actions) item.snapshot = { ...item.snapshot, actions: item.actions };
 			this.tcgSnapshot = item.snapshot;
 			if (item.snapshot.status === 'over') {
 				this.tcgEnded = true;
@@ -604,11 +614,14 @@ export class BattleRoom extends ChatRoom {
 					this.tcgWinner = item.snapshot.players?.[item.snapshot.winner]?.name || null;
 				}
 			}
+		} else if (this.tcgSnapshot) {
+			this.tcgSnapshot = applyTcgEvents(this.tcgSnapshot, item.events, item.actions);
 		}
 		if (item.markEnded) this.tcgEnded = true;
 		if (item.winner !== undefined) this.tcgWinner = item.winner;
 		if (item.wait != null) this.tcgWait = item.wait;
-		else if (item.snapshot) this.tcgWait = !item.snapshot.actions?.length;
+		else if (item.actions) this.tcgWait = !item.actions.length;
+		else if (this.tcgSnapshot) this.tcgWait = !this.tcgSnapshot.actions?.length;
 		if (!paced && !item.silent && item.events?.length) {
 			for (const ev of item.events) this.revealTcgEvent(ev);
 		}
@@ -1180,7 +1193,7 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 	}
 	applyTcgPayload(data: {
 		tcg?: boolean, kind?: string, wait?: boolean, seq?: number,
-		snapshot?: TcgSnapshot, events?: TcgEvent[],
+		snapshot?: TcgSnapshot, events?: TcgEvent[], actions?: TcgAction[],
 	}, skipFx = false) {
 		const room = this.props.room;
 		if (!data) return;
@@ -1215,11 +1228,20 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 			this.send('/timer on');
 			room.autoTimerActivated = true;
 		}
-		const wait = data.wait != null ? data.wait : (data.snapshot ? !data.snapshot.actions?.length : undefined);
-		const ended = data.snapshot?.status === 'over';
+		const actions = data.actions ?? data.snapshot?.actions;
+		const wait = data.wait != null ? data.wait :
+			(actions ? !actions.length : (data.snapshot ? !data.snapshot.actions?.length : undefined));
+		const ended = data.snapshot?.status === 'over' ||
+			!!data.events?.some(ev => ev.type === 'over');
 		let winner: string | null | undefined;
 		if (ended && data.snapshot?.winner != null) {
 			winner = data.snapshot.players?.[data.snapshot.winner]?.name || null;
+		}
+		if (ended && winner == null) {
+			const over = data.events?.find(ev => ev.type === 'over');
+			if (over && over.winner != null && room.tcgSnapshot?.players) {
+				winner = room.tcgSnapshot.players[over.winner as number]?.name || null;
+			}
 		}
 		// The server may send the same batch twice (the opening |tcg| payload is repeated);
 		// animate each event once. The silent |request| echo never animates, so it is not counted.
@@ -1233,6 +1255,7 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		room.enqueueTcg({
 			snapshot: data.snapshot,
 			events,
+			actions,
 			wait,
 			animate: !skipFx && !!events?.length && !PS.prefs.noanim,
 			silent: skipFx,

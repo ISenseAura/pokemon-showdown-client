@@ -73,6 +73,165 @@ export interface TcgSnapshot {
 	pendingPrize?: { seat: number, n: number };
 }
 
+function cloneTcgSnapshot(snap: TcgSnapshot): TcgSnapshot {
+	return JSON.parse(JSON.stringify(snap)) as TcgSnapshot;
+}
+
+function energyTypeFromCardId(cardId?: string): string {
+	if (!cardId) return 'colorless';
+	const basic = /^energy-(grass|fire|water|lightning|psychic|fighting|darkness|metal|fairy|dragon|colorless)$/i.exec(cardId);
+	if (basic) return basic[1].toLowerCase();
+	return 'colorless';
+}
+
+function handAsIds(hand: TcgPlayerView['hand']): string[] | null {
+	return Array.isArray(hand) ? hand.slice() : null;
+}
+
+function setHand(p: TcgPlayerView, hand: string[] | { count: number }) {
+	p.hand = hand;
+}
+
+function removeHandIndex(p: TcgPlayerView, index: number) {
+	const ids = handAsIds(p.hand);
+	if (ids && index >= 0 && index < ids.length) {
+		ids.splice(index, 1);
+		setHand(p, ids);
+		return;
+	}
+	if (!Array.isArray(p.hand) && p.hand && typeof p.hand.count === 'number' && p.hand.count > 0) {
+		p.hand = { count: p.hand.count - 1 };
+	}
+}
+
+function removeHandCardId(p: TcgPlayerView, cardId?: string) {
+	if (!cardId) return;
+	const ids = handAsIds(p.hand);
+	if (!ids) {
+		if (!Array.isArray(p.hand) && p.hand && typeof p.hand.count === 'number' && p.hand.count > 0) {
+			p.hand = { count: p.hand.count - 1 };
+		}
+		return;
+	}
+	const i = ids.indexOf(cardId);
+	if (i >= 0) {
+		ids.splice(i, 1);
+		setHand(p, ids);
+	}
+}
+
+function bumpPile(pile: { count: number } | undefined, delta: number): { count: number } {
+	return { count: Math.max(0, (pile?.count || 0) + delta) };
+}
+
+/**
+ * Apply a soft event batch onto a prior snapshot when the server omitted a full board.
+ * Structural changes (place/evolve/ko/turn/…) still arrive with a snapshot; this covers
+ * attach / damage / draw / status style mid-turn updates plus the new `actions` list.
+ */
+export function applyTcgEvents(
+	base: TcgSnapshot,
+	events: TcgEvent[] | undefined,
+	actions?: TcgAction[],
+): TcgSnapshot {
+	const snap = cloneTcgSnapshot(base);
+	const players = snap.players || [];
+	const list = events || [];
+	for (let i = 0; i < list.length; i++) {
+		const e = list[i];
+		if (e.type === 'damage' || e.type === 'heal') {
+			if (e.iid != null && e.hp != null) {
+				const found = findMonSlot(players, e.iid);
+				if (found) {
+					found.mon.hp = Number(e.hp);
+					if (e.amount != null) {
+						found.mon.lastDelta = e.type === 'damage' ? -Number(e.amount) : Number(e.amount);
+					}
+				}
+			}
+		} else if (e.type === 'status') {
+			if (e.iid != null) {
+				const found = findMonSlot(players, e.iid);
+				if (found) {
+					const s = e.status == null ? null : String(e.status).toLowerCase();
+					if (s === 'poisoned') {
+						found.mon.poisoned = true;
+					} else if (s === 'burned') {
+						found.mon.burned = true;
+					} else if (s == null || s === '') {
+						found.mon.status = null;
+						found.mon.poisoned = false;
+						found.mon.burned = false;
+					} else {
+						found.mon.status = s;
+					}
+				}
+			}
+		} else if (e.type === 'energy') {
+			if (e.iid) {
+				const found = findMonSlot(players, e.iid);
+				if (found) {
+					found.mon.energy = [...(found.mon.energy || []), energyTypeFromCardId(e.cardId)];
+					if (players[found.seat]) removeHandCardId(players[found.seat], e.cardId);
+				}
+			}
+		} else if (e.type === 'tool') {
+			if (e.iid) {
+				const found = findMonSlot(players, e.iid);
+				if (found) {
+					found.mon.tools = [...(found.mon.tools || []), e.cardId || 'tool'];
+					if (players[found.seat]) removeHandCardId(players[found.seat], e.cardId);
+				}
+			}
+		} else if (e.type === 'trainer') {
+			if (e.seat != null && players[e.seat]) removeHandCardId(players[e.seat], e.cardId);
+		} else if (e.type === 'draw' || e.type === 'find') {
+			const seat = e.seat as number;
+			const p = players[seat];
+			if (p) {
+				const ids = e.ids as string[] | undefined;
+				if (ids?.length) {
+					const hand = handAsIds(p.hand) || [];
+					setHand(p, hand.concat(ids));
+				} else if (e.type === 'draw' && e.n && !Array.isArray(p.hand)) {
+					p.hand = bumpPile(p.hand as { count: number }, Number(e.n) || 0);
+				}
+				if (e.type === 'draw' && e.n) p.deck = bumpPile(p.deck, -(Number(e.n) || 0));
+			}
+		} else if (e.type === 'act') {
+			const seat = e.seat as number;
+			const p = players[seat];
+			const action = e.action as TcgAction | undefined;
+			if (p && action) {
+				const handTypes = [
+					'setActive', 'setBench', 'playBasic', 'evolve', 'attachEnergy', 'attachTool',
+					'playTrainer', 'playStadium',
+				];
+				if (handTypes.includes(action.type) && typeof action.hand === 'number') {
+					removeHandIndex(p, action.hand);
+				}
+			}
+		} else if (e.type === 'request') {
+			// Soft batches only carry request.kind === "turn"; clear prompt leftovers.
+			if (e.kind === 'turn') {
+				delete snap.pendingSearch;
+				delete snap.pendingDiscard;
+				delete snap.pendingRetreatPay;
+				delete snap.pendingConfirm;
+				delete snap.pendingPromote;
+				delete snap.pendingFirst;
+				delete snap.pendingPrize;
+			}
+		} else if (e.type === 'over') {
+			snap.status = 'over';
+			if (e.winner !== undefined) snap.winner = e.winner;
+			if (e.reason) snap.winReason = e.reason;
+		}
+	}
+	if (actions) snap.actions = actions;
+	return snap;
+}
+
 type Preview = { cardId: string, image?: string, name?: string };
 
 /** One replay-player FX beat (Unreal-Bot graphics.js fxFor + hits). */
