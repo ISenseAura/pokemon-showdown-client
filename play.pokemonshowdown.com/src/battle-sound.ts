@@ -59,7 +59,7 @@ export class BattleBGM {
 		this.willRewind = false;
 		this.isActuallyPlaying = true;
 		this.sound.volume = BattleSound.bgmVolume / 100;
-		this.sound.play();
+		void this.sound.play().catch(() => {});
 		this.updateTime();
 	}
 	actuallyPause() {
@@ -132,7 +132,7 @@ export const BattleSound = new class {
 		const effect = this.getSound(url);
 		if (effect) {
 			effect.volume = volume / 100;
-			effect.play();
+			void effect.play().catch(() => {});
 		}
 	}
 

@@ -77,10 +77,25 @@ function cloneTcgSnapshot(snap: TcgSnapshot): TcgSnapshot {
 	return JSON.parse(JSON.stringify(snap)) as TcgSnapshot;
 }
 
-function energyTypeFromCardId(cardId?: string): string {
+function energyTypeFromCardId(cardId?: string, types?: string[]): string {
+	if (types && types.length && types[0]) return String(types[0]).toLowerCase();
 	if (!cardId) return 'colorless';
-	const basic = /^energy-(grass|fire|water|lightning|psychic|fighting|darkness|metal|fairy|dragon|colorless)$/i.exec(cardId);
-	if (basic) return basic[1].toLowerCase();
+	const id = cardId.toLowerCase();
+	const listed = /^(?:energy|zone-energy)-(grass|fire|water|lightning|psychic|fighting|darkness|metal|fairy|dragon|colorless)$/i.exec(id);
+	if (listed) return listed[1].toLowerCase();
+	const sve = /^sve-(\d+)$/.exec(id);
+	if (sve) {
+		const cycle = ['grass', 'fire', 'water', 'lightning', 'psychic', 'fighting', 'darkness', 'metal'];
+		const n = Number(sve[1]);
+		if (n >= 1 && n <= 16) return cycle[(n - 1) % 8];
+	}
+	const classic: { [k: string]: string } = {
+		'base1-97': 'grass', 'base1-98': 'fire', 'base1-99': 'water',
+		'base1-100': 'lightning', 'base1-101': 'psychic', 'base1-102': 'fighting',
+	};
+	if (classic[id]) return classic[id];
+	const fromName = /(grass|fire|water|lightning|psychic|fighting|darkness|metal|fairy|dragon|colorless)\s*energy/i.exec(id);
+	if (fromName) return fromName[1].toLowerCase();
 	return 'colorless';
 }
 
@@ -214,7 +229,9 @@ export function applyTcgEvents(
 			if (e.iid) {
 				const found = findMonSlot(players, e.iid);
 				if (found) {
-					found.mon.energy = [...(found.mon.energy || []), energyTypeFromCardId(e.cardId)];
+					found.mon.energy = [...(found.mon.energy || []), energyTypeFromCardId(
+						e.cardId, e.types || (e.energyType ? [e.energyType] : undefined),
+					)];
 				}
 			}
 		} else if (e.type === 'tool') {
@@ -379,15 +396,17 @@ export function applyTcgEvents(
 		} else if (e.type === 'request') {
 			clearPending(snap);
 			const kind = String(e.kind || '');
-			if (kind === 'search') {
+			const waiting = Array.isArray(e.waiting) ? e.waiting : [];
+			const forYou = snap.you != null && waiting.some((seat: number) => seat === snap.you);
+			if (forYou && kind === 'search') {
 				snap.pendingSearch = {
 					kind: e.searchKind, left: e.left, upTo: e.upTo, zone: e.zone, dest: e.dest,
 				};
-			} else if (kind === 'discard' && e.need != null) {
+			} else if (forYou && kind === 'discard' && e.need != null) {
 				snap.pendingDiscard = { need: Number(e.need) };
-			} else if (kind === 'retreatPay' && e.need != null) {
+			} else if (forYou && kind === 'retreatPay' && e.need != null) {
 				snap.pendingRetreatPay = { need: Number(e.need) };
-			} else if (kind === 'confirm') {
+			} else if (forYou && kind === 'confirm') {
 				snap.pendingConfirm = { title: e.title, text: e.text };
 			} else if (kind === 'promote' || kind === 'switch') {
 				snap.pendingPromote = e.promote != null ? Number(e.promote) : (e.waiting?.[0] as number);
@@ -734,7 +753,7 @@ function fxDuration(e: TcgEvent): number {
 	if (t === 'start') return 1400;
 	if (t === 'turn') return 2000;
 	if (t === 'first') return 3200;
-	if (t === 'coin') return 2600;
+	if (t === 'coin') return 2700;
 	if (t === 'attack' || t === 'ability') return 3000;
 	if (t === 'damage' || t === 'heal') return 2600;
 	if (t === 'ko') return 2800;
@@ -1330,12 +1349,15 @@ function MiniArt(props: { cardId?: string, name?: string }) {
 	return <img src={src} alt={props.name || ''} draggable={false} />;
 }
 
-class FxOverlay extends preact.Component<{ fx: FxBeat | null, you?: number | null, names?: string[] }> {
+class FxOverlay extends preact.Component<{
+	fx: FxBeat | null, you?: number | null, viewpoint?: 0 | 1, names?: string[],
+}> {
 	override render() {
 		const fx = this.props.fx;
 		if (!fx?.kind) return null;
-		const you = this.props.you != null ? this.props.you : 0;
-		const seat = fx.seat === you ? 'fx-p1' : 'fx-p2';
+		const layoutSeat = this.props.viewpoint != null ? this.props.viewpoint :
+			(this.props.you != null ? this.props.you : 0);
+		const seat = fx.seat === layoutSeat ? 'fx-p1' : 'fx-p2';
 		const yours = actorIsYou(fx.seat, this.props.you);
 		const art = fx.cardId ? <MiniArt cardId={fx.cardId} name={fx.extra} /> : null;
 		const k = fx.kind;
@@ -1363,7 +1385,7 @@ class FxOverlay extends preact.Component<{ fx: FxBeat | null, you?: number | nul
 			const result = fx.message || (shown.length === 1 ?
 				(shown[0] ? 'Heads!' : 'Tails!') :
 				`${headsN} Heads · ${tailsN} Tails`);
-			const lifeMs = (forFirst ? 2600 : 2100) + Math.max(0, shown.length - 1) * 200;
+			const lifeMs = (forFirst ? 2700 : 2200) + Math.max(0, shown.length - 1) * 200;
 			return wrap('coin', <>
 				{cap(forFirst ? 'FIRST' : 'COIN', side)}
 				<div
@@ -2287,6 +2309,8 @@ class TcgPrizeRail extends preact.Component<{
 
 export class TcgBoard extends preact.Component<{
 	snapshot: TcgSnapshot,
+	/** Seat drawn at the bottom. Spectators keep `snapshot.you === null`. */
+	viewpoint?: 0 | 1,
 	events: TcgEvent[],
 	fxKey: number,
 	/** Bumps when playback is cancelled (skip / replay) so the current beat stops. */
@@ -2878,7 +2902,7 @@ export class TcgBoard extends preact.Component<{
 				};
 				show(coinFx);
 				// Flip (~1.55s) + stagger + hold; linger a bit longer for the first-player announce.
-				const wait = (firstEv ? 2600 : 2100) + Math.max(0, results.length - 1) * 200;
+				const wait = (firstEv ? 2700 : 2200) + Math.max(0, results.length - 1) * 200;
 				i = j;
 				this.timer = window.setTimeout(step, wait);
 				return;
@@ -3304,8 +3328,9 @@ export class TcgBoard extends preact.Component<{
 		this.noteRemovals(snap);
 		this.rememberMons(snap);
 		this.rememberMons(this.props.fxSnapshot || snap);
-		const meIndex = snap.you != null ? snap.you : 0;
-		const foeIndex = meIndex === 0 ? 1 : 0;
+		const meIndex: 0 | 1 = (this.props.viewpoint === 0 || this.props.viewpoint === 1) ?
+			this.props.viewpoint : (snap.you === 1 ? 1 : 0);
+		const foeIndex: 0 | 1 = meIndex === 0 ? 1 : 0;
 		const me = snap.players[meIndex];
 		const foe = snap.players[foeIndex];
 		if (!me || !foe) {
@@ -3323,8 +3348,8 @@ export class TcgBoard extends preact.Component<{
 				return false;
 			});
 		const shuffleFx = this.state.fx?.kind === 'shuffleHand' ? this.state.fx : null;
-		const shufflingMine = !!(shuffleFx && actorIsYou(shuffleFx.seat, snap.you));
-		const shufflingFoe = !!(shuffleFx && !actorIsYou(shuffleFx.seat, snap.you));
+		const shufflingMine = !!(shuffleFx && shuffleFx.seat === meIndex);
+		const shufflingFoe = !!(shuffleFx && shuffleFx.seat !== meIndex);
 		const shuffleHandIds = shufflingMine ? (shuffleFx?.ids || null) : null;
 		const shuffleHandCount = shufflingMine ?
 			Math.max(shuffleHandIds?.length || 0, shuffleFx?.n || 0, 3) :
@@ -3333,8 +3358,9 @@ export class TcgBoard extends preact.Component<{
 		const yourTurn = !this.props.ended && !this.props.waiting && allActs.length > 0;
 		const turnSeat = typeof snap.turn === 'number' ? snap.turn : null;
 		const turnOwner = turnSeat != null ? snap.players[turnSeat] : null;
-		// A spectator sits behind seat 0 for layout, but it is never "their" turn.
-		const isMyTurnSeat = snap.you != null && turnSeat != null && turnSeat === meIndex;
+		// Spectators never own a seat; "Your turn" only when viewing your own seat.
+		const isMyTurnSeat = snap.you != null && turnSeat != null &&
+			turnSeat === snap.you && turnSeat === meIndex;
 		// After the game, a replay re-shows earlier snapshots: label those by turn, not "End".
 		const replaying = !!this.props.ended && snap.status !== 'over';
 		const turnWho = this.props.ended && !replaying ? '' :
@@ -3396,7 +3422,9 @@ export class TcgBoard extends preact.Component<{
 		const discardHot = dragging && drag!.over?.kind === 'discard' && discardDropHits.length > 0;
 
 		// No coaching once the game is over (replays re-show setup-phase snapshots).
-		const hint = this.props.ended ? '' : (dragging && drag!.hint) ||
+		// Spectators never get player prompts (discard / setup / search).
+		const seated = snap.you != null && !this.props.ended;
+		const hint = this.props.ended || !seated ? (dragging && drag!.hint) || '' : (dragging && drag!.hint) ||
 			snap.pendingConfirm?.text ||
 			(this.state.energyPick ? 'Choose a Pokémon for Energy' : '') ||
 			(this.state.retreatPick ? 'Choose a Benched Pokémon to switch in' : '') ||
@@ -3407,7 +3435,8 @@ export class TcgBoard extends preact.Component<{
 			(snap.pendingSearch ? 'Choose a card from the search' : '') ||
 			(snap.pendingDiscard ? `Drag ${snap.pendingDiscard.need} card${snap.pendingDiscard.need === 1 ? '' : 's'} to Discard` : '') ||
 			(snap.pendingRetreatPay ? `Discard ${snap.pendingRetreatPay.need} Energy to retreat` : '') ||
-			(snap.pendingPromote != null ? 'Choose a Benched Pokémon to promote' : '') ||
+			(snap.pendingPromote != null && snap.pendingPromote === snap.you ?
+				'Choose a Benched Pokémon to promote' : '') ||
 			(prizes.length && snap.pendingPrize ?
 				`Take ${Math.max(1, snap.pendingPrize.n - this.state.prizeTakenLocal)} Prize card${
 					snap.pendingPrize.n - this.state.prizeTakenLocal === 1 ? '' : 's'
@@ -3828,7 +3857,7 @@ export class TcgBoard extends preact.Component<{
 					pays.length ? 'pay' :
 					mulligans.length ? 'mulligan' :
 					prizes.length ? 'prize' : '';
-				if (!kind) return null;
+				if (!kind || snap.you == null) return null;
 				const head = promptHeading(snap, kind);
 				return <div class={`tcg-prompt kind-${kind}`}>
 					<div class="tcg-prompt-veil"></div>
@@ -3964,7 +3993,8 @@ export class TcgBoard extends preact.Component<{
 			</div>}
 			<FxOverlay
 				key={st.fx ? `${st.fx.kind}-${st.fx.iid || ''}-${st.fx.amount || ''}-${Object.values(st.pkFx)[0]?.tick || 0}` : 'fx'}
-				fx={st.fx} you={snap.you} names={snap.players.map(p => p?.name || '')}
+				fx={st.fx} you={snap.you} viewpoint={meIndex}
+				names={snap.players.map(p => p?.name || '')}
 			/>
 		</div>;
 	}

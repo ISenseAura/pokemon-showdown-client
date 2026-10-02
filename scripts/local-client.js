@@ -79,6 +79,23 @@ const server = http.createServer((req, res) => {
 	}
 
 	const pathname = decodeURIComponent(url.pathname);
+	if (pathname.startsWith('/replay/')) {
+		const simBase = process.env.SIM_URL || 'http://127.0.0.1:8000';
+		const target = new URL(pathname + url.search, simBase);
+		const upstream = http.request(target, { method: req.method }, upstreamRes => {
+			res.writeHead(upstreamRes.statusCode || 200, {
+				'Content-Type': upstreamRes.headers['content-type'] || 'application/json; charset=utf-8',
+				'Cache-Control': upstreamRes.headers['cache-control'] || 'public, max-age=60',
+			});
+			upstreamRes.pipe(res);
+		});
+		upstream.on('error', error => {
+			res.writeHead(502, { 'Content-Type': 'text/plain' });
+			res.end(String(error));
+		});
+		req.pipe(upstream);
+		return;
+	}
 	const file = pathname === '/' ? indexFile : path.join(root, pathname);
 	if (!file.startsWith(root)) {
 		res.writeHead(403);

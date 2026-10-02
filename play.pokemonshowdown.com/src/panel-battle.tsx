@@ -325,12 +325,10 @@ export class BattleRoom extends ChatRoom {
 		this.tcgViewpoint = this.tcgViewpoint === 0 ? 1 : 0;
 		this.update(null);
 	};
-	/** Snapshot for the board with spectator viewpoint applied. */
-	tcgViewSnapshot(snap: TcgSnapshot | null): TcgSnapshot | null {
-		if (!snap) return null;
-		if (this.isTcgPlayer() && !this.tcgEnded && !this.tcgReplayMode) return snap;
-		if (snap.you != null && !this.tcgReplayMode && !this.tcgEnded) return snap;
-		return { ...snap, you: this.tcgViewpoint };
+	/** Layout seat at the bottom. Does not rewrite `snapshot.you` (spectators stay `you: null`). */
+	tcgBoardViewpoint(): 0 | 1 {
+		if (this.tcgViewpoint === 0 || this.tcgViewpoint === 1) return this.tcgViewpoint;
+		return this.tcgSide ?? 0;
 	}
 	turnAtHistoryIndex(index: number): number {
 		let turn = 0;
@@ -692,10 +690,21 @@ export class BattleRoom extends ChatRoom {
 
 	loadReplay() {
 		const replayid = this.id.slice(7);
-		const urls = [
+		const tcg = isTcgBattleId(this.id) || this.tcgMode;
+		const urls = tcg ? [
+			`/replay/${replayid}.json`,
+			`https://${Config.routes.client}/replay/${replayid}.json`,
+		] : [
 			`https://${Config.routes.replays}/${replayid}.json`,
 			`https://replay.pokemonshowdown.com/${replayid}.json`,
 		];
+		if (tcg && PS.server?.host) {
+			const proto = PS.server.protocol === 'http' ? 'http' : 'https';
+			const port = PS.server.httpport || (proto === 'http' ? PS.server.port : 0);
+			const origin = `${proto}://${PS.server.host}${port && port !== 80 && port !== 443 ? `:${port}` : ''}`;
+			const simUrl = `${origin}/replay/${replayid}.json`;
+			if (!urls.includes(simUrl)) urls.push(simUrl);
+		}
 		const tryFetch = (i: number): Promise<string> =>
 			Net(urls[i]).get().catch(() => (i + 1 < urls.length ? tryFetch(i + 1) : ''));
 		tryFetch(0).then(data => {
@@ -778,6 +787,8 @@ class TimerButton extends preact.Component<{ room: BattleRoom, top: number, inli
 		if (!this.timerInterval && kicking) {
 			this.timerInterval = setInterval(() => {
 				if (room.tcgMode) {
+					// Match PS: only tick while you still have a choice to make.
+					if (room.tcgWait || room.tcgEnded) return;
 					if (typeof room.tcgKickingInactive === 'number' && room.tcgKickingInactive > 1) {
 						room.tcgKickingInactive--;
 						if (room.tcgTotalTimeLeft) room.tcgTotalTimeLeft--;
@@ -1104,6 +1115,10 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 				const data = JSON.parse(args[1]) as {
 					tcg?: boolean, events?: TcgEvent[], snapshot?: TcgSnapshot, wait?: boolean, actions?: TcgAction[],
 				};
+				if (data.tcg && data.wait != null) {
+					room.tcgWait = !!data.wait;
+					room.update(null);
+				}
 				// Slim |request| is timer-only (wait). Fat echoes from older servers still apply silently.
 				if (!data.events?.length && !data.snapshot) return;
 				this.applyTcgPayload(data, true);
@@ -2387,11 +2402,12 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		const boardW = layout === 'top-and-bottom' ?
 			Math.max(battleWidth, Math.min(room.width, 960)) :
 			Math.max(battleWidth, room.width - chatWidth);
-		const viewSnap = room.tcgViewSnapshot(room.tcgSnapshot);
-		const viewFx = room.tcgViewSnapshot(room.tcgFxSnapshot);
+		const viewSnap = room.tcgSnapshot;
+		const viewFx = room.tcgFxSnapshot;
 		const board = viewSnap ? <TcgBoard
 			snapshot={viewSnap}
 			fxSnapshot={viewFx}
+			viewpoint={room.tcgBoardViewpoint()}
 			events={room.tcgEvents}
 			fxKey={room.tcgFxKey}
 			halt={room.tcgHalt}

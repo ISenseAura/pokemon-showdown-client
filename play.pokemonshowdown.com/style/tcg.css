@@ -1993,36 +1993,40 @@ span.tcg-card-backface {
   72% { opacity: 1; }
   100% { transform: translateY(-50%) scaleX(1); opacity: 0; }
 }
-/* 720° = even half-turns → lands heads (front). 900° = odd → lands tails (back). */
-/* Transform only: animating opacity on the preserve-3d coin flattens it and breaks the back face. */
+/* Linear Y-spin (constant speed) then ease into the final face.
+   Few big eased jumps were what made the old flip look stuttery. */
 @keyframes fx-coin-land-heads {
-  0% { transform: rotateY(0deg) rotateX(62deg) scale(0.4); }
-  14% { transform: rotateY(220deg) rotateX(18deg) scale(1.1); }
-  48% { transform: rotateY(540deg) rotateX(-10deg) scale(1); }
-  72% { transform: rotateY(690deg) rotateX(5deg) scale(1.03); }
-  88%, 100% { transform: rotateY(720deg) rotateX(0) scale(1); }
+  0% { transform: rotateY(0deg); animation-timing-function: linear; }
+  72% { transform: rotateY(1260deg); animation-timing-function: cubic-bezier(0.15, 0.85, 0.25, 1); }
+  100% { transform: rotateY(1440deg); }
 }
 @keyframes fx-coin-land-tails {
-  0% { transform: rotateY(0deg) rotateX(62deg) scale(0.4); }
-  14% { transform: rotateY(220deg) rotateX(18deg) scale(1.1); }
-  48% { transform: rotateY(600deg) rotateX(-10deg) scale(1); }
-  72% { transform: rotateY(860deg) rotateX(5deg) scale(1.03); }
-  88%, 100% { transform: rotateY(900deg) rotateX(0) scale(1); }
+  0% { transform: rotateY(0deg); animation-timing-function: linear; }
+  72% { transform: rotateY(1440deg); animation-timing-function: cubic-bezier(0.15, 0.85, 0.25, 1); }
+  100% { transform: rotateY(1620deg); }
+}
+@keyframes fx-coin-toss {
+  0% { transform: translate3d(0, 28px, 0) scale(0.9); animation-timing-function: cubic-bezier(0.2, 0.85, 0.3, 1); }
+  24% { transform: translate3d(0, -40px, 0) scale(1.04); animation-timing-function: cubic-bezier(0.35, 0, 0.55, 1); }
+  58% { transform: translate3d(0, -12px, 0) scale(1); animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1); }
+  82% { transform: translate3d(0, 6px, 0) scale(1); }
+  92% { transform: translate3d(0, -2px, 0) scale(1); }
+  100% { transform: translate3d(0, 0, 0) scale(1); }
 }
 @keyframes fx-coin-scene-in {
   0% { opacity: 0; }
-  14%, 100% { opacity: 1; }
+  10%, 100% { opacity: 1; }
 }
 @keyframes fx-coin-row-life {
-  0% { opacity: 0; transform: translate(-50%, -46%) scale(0.92); }
-  10% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-  82% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-  100% { opacity: 0; transform: translate(-50%, -52%) scale(0.96); }
+  0% { opacity: 0; }
+  8% { opacity: 1; }
+  86% { opacity: 1; }
+  100% { opacity: 0; }
 }
 @keyframes fx-coin-result-in {
-  0%, 42% { opacity: 0; transform: translate(-50%, 8px); }
-  55% { opacity: 1; transform: translate(-50%, 0); }
-  82% { opacity: 1; }
+  0%, 62% { opacity: 0; transform: translate(-50%, 10px); }
+  72% { opacity: 1; transform: translate(-50%, 0); }
+  88% { opacity: 1; }
   100% { opacity: 0; }
 }
 @keyframes fx-card-show {
@@ -2327,9 +2331,10 @@ span.tcg-card-backface {
   justify-content: center;
   gap: 14px;
   max-width: min(92vw, 640px);
-  perspective: 900px;
+  perspective: 1100px;
+  perspective-origin: 50% 45%;
   transform: translate(-50%, -50%);
-  animation: fx-coin-row-life 2.1s cubic-bezier(0.22, 0.7, 0.25, 1) forwards;
+  animation: fx-coin-row-life 2.2s linear forwards;
   pointer-events: none;
 }
 .fx-coin-row.n-4,
@@ -2341,10 +2346,14 @@ span.tcg-card-backface {
   --coin-delay: 0s;
   width: 92px;
   height: 92px;
-  perspective: 700px;
+  perspective: 800px;
   flex: 0 0 auto;
-  animation: fx-coin-scene-in 1.55s ease both;
-  animation-delay: var(--coin-delay);
+  transform-style: preserve-3d;
+  -webkit-transform-style: preserve-3d;
+  animation:
+    fx-coin-scene-in 0.2s ease both,
+    fx-coin-toss 1.75s cubic-bezier(0.22, 0.7, 0.28, 1) both;
+  animation-delay: var(--coin-delay), var(--coin-delay);
 }
 .fx-coin-row.n-4 .fx-coin-scene,
 .fx-coin-row.n-5 .fx-coin-scene { width: 76px; height: 76px; }
@@ -2357,13 +2366,14 @@ span.tcg-card-backface {
   position: relative;
   transform-style: preserve-3d;
   -webkit-transform-style: preserve-3d;
+  will-change: transform;
 }
 .fx-coin-3d.land-heads {
-  animation: fx-coin-land-heads 1.55s cubic-bezier(0.2, 0.75, 0.25, 1) both;
+  animation: fx-coin-land-heads 1.75s linear both;
   animation-delay: var(--coin-delay);
 }
 .fx-coin-3d.land-tails {
-  animation: fx-coin-land-tails 1.55s cubic-bezier(0.2, 0.75, 0.25, 1) both;
+  animation: fx-coin-land-tails 1.75s linear both;
   animation-delay: var(--coin-delay);
 }
 .fx-coin-face {
@@ -2436,7 +2446,7 @@ span.tcg-card-backface {
   letter-spacing: 0.04em;
   white-space: nowrap;
   pointer-events: none;
-  animation: fx-coin-result-in 2.1s ease forwards;
+  animation: fx-coin-result-in 2.2s ease forwards;
 }
 .fx-toast-chip {
   position: absolute;
