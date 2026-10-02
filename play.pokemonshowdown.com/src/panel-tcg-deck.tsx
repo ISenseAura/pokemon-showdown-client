@@ -82,7 +82,17 @@ export class TcgDeckEditor extends preact.Component<{
 		const ids = unpackTcgDeck(this.props.team.packedTeam);
 		this.setState({ format, ids });
 		loadTcgCardIndex().then(() => this.setState({ ready: true }));
+		window.addEventListener('keydown', this.onKeyDown);
 	}
+
+	override componentWillUnmount() {
+		window.removeEventListener('keydown', this.onKeyDown);
+		if (this.searchTimer != null) window.clearTimeout(this.searchTimer);
+	}
+
+	onKeyDown = (ev: KeyboardEvent) => {
+		if (ev.key === 'Escape' && this.state.preview) this.closePreview();
+	};
 
 	override componentDidUpdate(prev: this['props']) {
 		if (prev.team !== this.props.team || prev.team.format !== this.props.team.format) {
@@ -138,7 +148,14 @@ export class TcgDeckEditor extends preact.Component<{
 			if (named >= max) return;
 		}
 		this.commit(this.state.ids.concat([id]));
+	};
+
+	openPreview = (card: TcgCardRow | null) => {
 		this.setState({ preview: card });
+	};
+
+	closePreview = () => {
+		this.setState({ preview: null });
 	};
 
 	onSearch = (ev: Event) => {
@@ -256,37 +273,6 @@ export class TcgDeckEditor extends preact.Component<{
 						</select>
 					</div>}
 				</div>
-				<div class={`tcg-deck-preview${preview ? '' : ' empty'}`}>
-					{preview ? <>
-						{preview.i && <img src={preview.i.replace('_SM.webp', '.webp').replace('small', 'large')} alt={preview.n} />}
-						<div class="tcg-deck-preview-info">
-							<strong>{preview.n}</strong>
-							<div>{preview.set}{preview.r ? ` · Reg ${preview.r}` : ''}</div>
-							<div>{preview.s === 'P' ? 'Pokémon' : preview.s === 'T' ? 'Trainer' : 'Energy'}{(preview.u || []).length ? ` · ${preview.u.join(', ')}` : ''}</div>
-							{ready && (() => {
-								const inDeck = ids.filter(x => x === preview.id).length;
-								const max = copyMaxFor(preview, format);
-								return <div class="tcg-deck-card-qty tcg-deck-preview-qty">
-									<button
-										type="button"
-										class="tcg-deck-qty"
-										disabled={!inDeck}
-										onClick={() => this.setQty(preview.id, inDeck - 1)}
-										aria-label={`Remove one ${preview.n}`}
-									>−</button>
-									<span class="tcg-deck-qty-n">{inDeck}</span>
-									<button
-										type="button"
-										class="tcg-deck-qty"
-										disabled={inDeck >= max}
-										onClick={() => this.addCard(preview.id)}
-										aria-label={`Add one ${preview.n}`}
-									>+</button>
-								</div>;
-							})()}
-						</div>
-					</> : <p class="tcg-deck-preview-hint">Hover a card to preview it</p>}
-				</div>
 				{!ready ? <p class="tcg-deck-loading">Loading card catalog…</p> : (
 					<div class="tcg-deck-results">
 						{results.map(c => {
@@ -295,13 +281,12 @@ export class TcgDeckEditor extends preact.Component<{
 							return <div
 								key={c.id}
 								class={`tcg-deck-card${inDeck ? ' in-deck' : ''}`}
-								onMouseEnter={() => this.setState({ preview: c })}
-								title={`${c.n} (${c.set}${c.r ? ` · ${c.r}` : ''})`}
+								title={`${c.n} (${c.set}${c.r ? ` · ${c.r}` : ''}) — click art to preview`}
 							>
 								<button
 									type="button"
 									class="tcg-deck-card-art"
-									onClick={() => this.addCard(c.id)}
+									onClick={() => this.openPreview(c)}
 								>
 									{c.i ? <img src={c.i} alt="" /> : <span class="tcg-deck-card-fallback">{c.n}</span>}
 								</button>
@@ -332,6 +317,49 @@ export class TcgDeckEditor extends preact.Component<{
 					</div>
 				)}
 			</div>
+
+			{preview && this.renderPreviewModal(preview, ids, format)}
+		</div>;
+	}
+
+	renderPreviewModal(card: TcgCardRow, ids: string[], format: TcgDeckFormat) {
+		const inDeck = ids.filter(x => x === card.id).length;
+		const max = copyMaxFor(card, format);
+		const large = card.i ? card.i.replace('_SM.webp', '.webp').replace('small', 'large') : '';
+		const kind = card.s === 'P' ? 'Pokémon' : card.s === 'T' ? 'Trainer' : 'Energy';
+		return <div
+			class="ps-overlay tcg-deck-modal"
+			role="dialog"
+			aria-modal="true"
+			aria-label={card.n}
+			onClick={this.closePreview}
+		>
+			<div class="ps-popup tcg-deck-modal-card" onClick={ev => ev.stopPropagation()}>
+				<button type="button" class="button tcg-deck-modal-close" onClick={this.closePreview} aria-label="Close">×</button>
+				{large ? <img src={large} alt={card.n} /> : <div class="tcg-deck-card-fallback">{card.n}</div>}
+				<div class="tcg-deck-modal-info">
+					<strong>{card.n}</strong>
+					<div>{card.set}{card.r ? ` · Reg ${card.r}` : ''}</div>
+					<div>{kind}{(card.u || []).length ? ` · ${card.u.join(', ')}` : ''}</div>
+					<div class="tcg-deck-card-qty tcg-deck-modal-qty">
+						<button
+							type="button"
+							class="tcg-deck-qty"
+							disabled={!inDeck}
+							onClick={() => this.setQty(card.id, inDeck - 1)}
+							aria-label={`Remove one ${card.n}`}
+						>−</button>
+						<span class="tcg-deck-qty-n">{inDeck}</span>
+						<button
+							type="button"
+							class="tcg-deck-qty"
+							disabled={inDeck >= max}
+							onClick={() => this.addCard(card.id)}
+							aria-label={`Add one ${card.n}`}
+						>+</button>
+					</div>
+				</div>
+			</div>
 		</div>;
 	}
 
@@ -345,7 +373,7 @@ export class TcgDeckEditor extends preact.Component<{
 						<button type="button" class="tcg-deck-qty" onClick={() => this.setQty(line.id, line.n - 1)}>−</button>
 						<span class="tcg-deck-qty-n">{line.n}</span>
 						<button type="button" class="tcg-deck-qty" onClick={() => this.setQty(line.id, line.n + 1)}>+</button>
-						<button type="button" class="tcg-deck-line-name" onClick={() => this.setState({ preview: line.card || null })}>
+						<button type="button" class="tcg-deck-line-name" onClick={() => this.openPreview(line.card || null)}>
 							{line.card?.n || line.id}
 						</button>
 					</li>

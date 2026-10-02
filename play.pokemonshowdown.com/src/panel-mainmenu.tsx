@@ -519,46 +519,8 @@ class NewsPanel extends PSRoomPanel {
 	static readonly routes = ['news'];
 	static readonly title = 'News';
 	static readonly location = 'mini-window';
-	change = (ev: Event) => {
-		const target = ev.currentTarget as HTMLInputElement;
-		this.setClient(target.value as '0' | '1' | 'leave');
-	};
-	setClient(setting: '0' | '1' | 'leave') {
-		if (setting === '1') {
-			document.cookie = "preactalpha=1; expires=Thu, 1 Sep 2026 12:00:00 UTC; path=/";
-		} else if (setting === '0') {
-			document.cookie = "preactalpha=0; expires=Thu, 1 Sep 2026 12:00:00 UTC; path=/";
-		} else {
-			document.cookie = "preactalpha=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
-		}
-		if (setting === 'leave') {
-			document.location.href = `/`;
-		}
-	}
-	override componentDidMount() {
-		if (!document.cookie.includes('preactalpha=')) this.setClient('1');
-	}
 	override render() {
-		const cookieSet = !document.cookie.includes('preactalpha=0');
 		return <PSPanelWrapper room={this.props.room} fullSize>
-			<div class="construction">
-				This is the client rewrite beta test.
-				<form>
-					<label class="checkbox">
-						<input type="radio" name="preactalpha" value="1" onChange={this.change} checked={cookieSet} /> {}
-						Use Rewrite always
-					</label>
-					<label class="checkbox">
-						<input type="radio" name="preactalpha" value="0" onChange={this.change} checked={!cookieSet} /> {}
-						Use Rewrite with URL
-					</label>
-					<label class="checkbox">
-						<input type="radio" name="preactalpha" value="leave" onChange={this.change} /> {}
-						Back to the old client
-					</label>
-				</form>
-				Provide feedback in <a href="development" style="color:black">the Dev chatroom</a>.
-			</div>
 			<div class="readable-bg" dangerouslySetInnerHTML={{ __html: PS.newsHTML }}></div>
 		</PSPanelWrapper>;
 	}

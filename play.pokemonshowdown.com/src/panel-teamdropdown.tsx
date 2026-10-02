@@ -9,7 +9,9 @@ import { PS, type Team } from "./client-main";
 import { PSIcon, PSPanelWrapper, PSRoomPanel } from "./panels";
 import { Dex, toID, type ID } from "./battle-dex";
 import { Teams } from "./battle-teams";
-import { deckCounts, getTcgCard, isTcgFormatId, isTcgPacked, loadTcgCardIndex, unpackTcgDeck } from "./battle-tcg-deck";
+import {
+	deckPreviewCards, getTcgCard, isTcgFormatId, isTcgPacked, loadTcgCardIndex, unpackTcgDeck,
+} from "./battle-tcg-deck";
 
 export class PSTeambuilder {
 	static exportPackedTeam(team: Team) {
@@ -170,16 +172,15 @@ export function TeamBox(props: {
 							PS.rooms.teambuilder?.update(null);
 						});
 					}
-					const counts = deckCounts(ids);
-					const sample = ids.slice(0, 6).map(id => {
-						const c = getTcgCard(id);
-						return c?.i ?
-							<img src={c.i} alt={c.n} width={28} height={40} style="border-radius:2px;margin-right:2px" /> :
-							<span class="picon" style="margin-right:2px">{c?.n || id}</span>;
-					});
+					const sample = deckPreviewCards(ids, 6);
 					team.iconCache = <>
-						{sample}
-						<small style="margin-left:4px">{counts.total} cards · P{counts.pokemon} T{counts.trainer} E{counts.energy}</small>
+						<span class="tcg-team-icons">
+							{sample.map(c => c.i ?
+								<img src={c.i} alt="" title={c.n} /> :
+								<span class="tcg-team-icon-fallback" title={c.n}>{c.n.slice(0, 3)}</span>
+							)}
+						</span>
+						<span class="tcg-team-meta">{ids.length} cards</span>
 					</>;
 				}
 			}

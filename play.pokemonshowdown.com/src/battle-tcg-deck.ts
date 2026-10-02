@@ -252,3 +252,22 @@ export function deckCounts(ids: string[]) {
 	}
 	return { pokemon, trainer, energy, total: ids.length };
 }
+
+/**
+ * Compact teambuilder strip: unique cards, Pokémon first, then Trainer/Energy.
+ * Never grows with deck size — callers should render at most `limit` thumbs.
+ */
+export function deckPreviewCards(ids: string[], limit = 6): TcgCardRow[] {
+	const seen = new Set<string>();
+	const poke: TcgCardRow[] = [];
+	const other: TcgCardRow[] = [];
+	for (const id of ids) {
+		if (seen.has(id)) continue;
+		seen.add(id);
+		const c = getTcgCard(id);
+		if (!c) continue;
+		if (c.s === 'P') poke.push(c);
+		else other.push(c);
+	}
+	return poke.concat(other).slice(0, limit);
+}
