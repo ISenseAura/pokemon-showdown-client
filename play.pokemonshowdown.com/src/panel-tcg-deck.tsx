@@ -238,6 +238,37 @@ export class TcgDeckEditor extends preact.Component<{
 						</select>
 					</div>}
 				</div>
+				<div class={`tcg-deck-preview${preview ? '' : ' empty'}`}>
+					{preview ? <>
+						{preview.i && <img src={preview.i.replace('_SM.webp', '.webp').replace('small', 'large')} alt={preview.n} />}
+						<div class="tcg-deck-preview-info">
+							<strong>{preview.n}</strong>
+							<div>{preview.set}{preview.r ? ` · Reg ${preview.r}` : ''}</div>
+							<div>{preview.s === 'P' ? 'Pokémon' : preview.s === 'T' ? 'Trainer' : 'Energy'}{(preview.u || []).length ? ` · ${preview.u.join(', ')}` : ''}</div>
+							{ready && (() => {
+								const inDeck = ids.filter(x => x === preview.id).length;
+								const max = copyMaxFor(preview, format);
+								return <div class="tcg-deck-card-qty tcg-deck-preview-qty">
+									<button
+										type="button"
+										class="tcg-deck-qty"
+										disabled={!inDeck}
+										onClick={() => this.setQty(preview.id, inDeck - 1)}
+										aria-label={`Remove one ${preview.n}`}
+									>−</button>
+									<span class="tcg-deck-qty-n">{inDeck}</span>
+									<button
+										type="button"
+										class="tcg-deck-qty"
+										disabled={inDeck >= max}
+										onClick={() => this.addCard(preview.id)}
+										aria-label={`Add one ${preview.n}`}
+									>+</button>
+								</div>;
+							})()}
+						</div>
+					</> : <p class="tcg-deck-preview-hint">Hover a card to preview it</p>}
+				</div>
 				{!ready ? <p class="tcg-deck-loading">Loading card catalog…</p> : (
 					<div class="tcg-deck-results">
 						{results.map(c => {
@@ -282,14 +313,6 @@ export class TcgDeckEditor extends preact.Component<{
 						{!results.length && <p class="tcg-deck-empty">No cards match.</p>}
 					</div>
 				)}
-				{preview && <div class="tcg-deck-preview">
-					{preview.i && <img src={preview.i.replace('_SM.webp', '.webp').replace('small', 'large')} alt={preview.n} />}
-					<div>
-						<strong>{preview.n}</strong>
-						<div>{preview.set}{preview.r ? ` · Reg ${preview.r}` : ''}</div>
-						<div>{preview.s === 'P' ? 'Pokémon' : preview.s === 'T' ? 'Trainer' : 'Energy'}{(preview.u || []).length ? ` · ${preview.u.join(', ')}` : ''}</div>
-					</div>
-				</div>}
 			</div>
 
 			<aside class="tcg-deck-rail">

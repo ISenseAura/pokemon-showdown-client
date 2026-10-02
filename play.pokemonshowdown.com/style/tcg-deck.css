@@ -165,14 +165,40 @@
 	display: flex;
 	gap: 12px;
 	align-items: center;
-	margin-top: 8px;
-	padding-top: 8px;
-	border-top: 1px solid rgba(255, 255, 255, 0.1);
+	flex-shrink: 0;
+	min-height: 96px;
+	margin: 0 0 10px;
+	padding: 8px 10px;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-radius: 8px;
+	background: rgba(0, 0, 0, 0.22);
+	font-size: 12px;
+}
+.tcg-deck-preview.empty {
+	justify-content: center;
+}
+.tcg-deck-preview-hint {
+	margin: 0;
+	opacity: 0.55;
 	font-size: 12px;
 }
 .tcg-deck-preview img {
 	width: 72px;
 	border-radius: 4px;
+	flex-shrink: 0;
+}
+.tcg-deck-preview-info {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+.tcg-deck-preview-info strong {
+	font-size: 15px;
+}
+.tcg-deck-preview-qty {
+	justify-content: flex-start;
+	padding: 6px 0 0;
 }
 
 .tcg-deck-rail {
