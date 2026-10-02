@@ -2357,19 +2357,19 @@ function whyBadDrop(snap: TcgSnapshot, ctx: WhyCtx): string {
 		return "This card can't target that Pokémon.";
 	}
 	if (drop.empty) {
-		if (k.stage) return 'Drop this on the Pokémon it evolves from.';
 		if (k.energy || fromZone) return 'Drop Energy on a Pokémon, not an empty spot.';
+		if (k.stage) return 'Drop this on the Pokémon it evolves from.';
 		if (k.trainer || k.tool) return "This card doesn't play onto an empty spot.";
 		if (drop.slot === 'active') return "This can't be your Active Pokémon.";
 		return 'That Bench spot is not open for this card.';
 	}
-	if (k.basic && !k.stage) return 'That spot is taken.';
-	if (k.stage) return "This card can't evolve that Pokémon.";
 	if (k.energy || fromZone) {
 		return acts.some(a => a.type === 'attachEnergy' || a.type === 'attachZone') ?
 			"You can't attach Energy to that Pokémon." :
 			(fromZone ? whyZone(snap) : whyCard(snap, id));
 	}
+	if (k.basic && !k.stage) return 'That spot is taken.';
+	if (k.stage) return "This card can't evolve that Pokémon.";
 	if (k.tool) return "You can't attach this Tool to that Pokémon.";
 	if (k.stadium) return 'Drop Stadium cards on the Stadium spot.';
 	if (k.trainer) return "This card can't target that Pokémon.";
@@ -2936,6 +2936,8 @@ export class TcgBoard extends preact.Component<{
 		prizePicked: [] as number[],
 		/** How many prizes this prompt asked for. The prompt closes once that many are sent. */
 		prizeGoal: 0,
+		/** Go First / Go Second was sent. Hide that prompt until the server drops the choice. */
+		firstSent: false,
 		drag: null as DragState | null,
 		/** Why the play the player just tried is illegal, anchored at the pointer. */
 		refuse: null as { text: string, x: number, y: number } | null,
@@ -3052,8 +3054,8 @@ export class TcgBoard extends preact.Component<{
 			if (this.timer != null) window.clearTimeout(this.timer);
 			this.timer = null;
 			this.clearFx();
-			if (this.state.prizePicked.length || this.state.prizeGoal) {
-				this.setState({ prizePicked: [], prizeGoal: 0 });
+			if (this.state.prizePicked.length || this.state.prizeGoal || this.state.firstSent) {
+				this.setState({ prizePicked: [], prizeGoal: 0, firstSent: false });
 			}
 		} else if (this.state.prizePicked.length || this.state.prizeGoal) {
 			// Forget the picks only after this prompt's choices are gone.
@@ -3068,6 +3070,18 @@ export class TcgBoard extends preact.Component<{
 				}
 			}
 			if (!any) this.setState({ prizePicked: [], prizeGoal: 0 });
+		} else if (this.state.firstSent) {
+			// The in-progress board falls back to the pre-click actions between beats.
+			// Only the committed snapshot means the server has left this choice.
+			const committed = this.props.snapshot.actions || [];
+			let stillFirst = false;
+			for (let j = 0; j < committed.length; j++) {
+				if (committed[j].type === 'chooseFirst') {
+					stillFirst = true;
+					break;
+				}
+			}
+			if (!stillFirst) this.setState({ firstSent: false });
 		}
 		if (this.props.fxKey !== prev.fxKey) {
 			this.stashHands(prev.fxSnapshot || prev.snapshot);
@@ -3697,6 +3711,8 @@ export class TcgBoard extends preact.Component<{
 	choose = (a: TcgAction) => {
 		let prizePicked = this.state.prizePicked;
 		let prizeGoal = this.state.prizeGoal;
+		let firstSent = this.state.firstSent;
+		if (a.type === 'chooseFirst') firstSent = true;
 		if (a.type === 'takePrize') {
 			const idx = Number(a.index);
 			if (prizePicked.indexOf(idx) < 0) prizePicked = prizePicked.concat(idx);
@@ -3708,7 +3724,7 @@ export class TcgBoard extends preact.Component<{
 		this.stopRefuseTimer();
 		this.setState({
 			selectedHand: null, energyPick: false, retreatPick: false, drag: null,
-			menuSlot: null, endTurnConfirm: false, prizePicked, prizeGoal, refuse: null,
+			menuSlot: null, endTurnConfirm: false, prizePicked, prizeGoal, firstSent, refuse: null,
 		});
 		this.props.onAct(a);
 	};
@@ -4107,7 +4123,8 @@ export class TcgBoard extends preact.Component<{
 			0;
 		const allActs = this.acts();
 		const fxNow = this.state.fx;
-		const choosingFirst = allActs.some(a => a.type === 'chooseFirst') ||
+		const firstPending = this.state.firstSent ? [] : allActs.filter(a => a.type === 'chooseFirst');
+		const choosingFirst = firstPending.length > 0 ||
 			fxNow?.kind === 'coin' || fxNow?.kind === 'first';
 		const ahead = view !== snap;
 		const turnSeat = typeof view.turn === 'number' ? view.turn : null;
@@ -4142,7 +4159,7 @@ export class TcgBoard extends preact.Component<{
 		const endTurn = allActs.find(a => a.type === 'endTurn');
 		const startBattle = allActs.find(a => a.type === 'setupDone');
 		const confirms = allActs.filter(a => a.type === 'confirmYes' || a.type === 'confirmNo');
-		const firsts = allActs.filter(a => a.type === 'chooseFirst');
+		const firsts = firstPending;
 		const searches = allActs.filter(a => a.type === 'searchPick' || a.type === 'searchDone');
 		const discards = allActs.filter(a => a.type === 'discardPick');
 		const pays = allActs.filter(a => a.type === 'payEnergy');

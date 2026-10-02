@@ -1107,6 +1107,13 @@
 .tcg-hand-mine .tcg-card:hover {
 	z-index: 50 !important;
 }
+/* The face lifts on hover. Hit the face, not the slot it left, or the card beside it plays. */
+.tcg-hand-mine .tcg-card-fan {
+	pointer-events: none;
+}
+.tcg-hand-mine .tcg-card-fan .tcg-card-inner {
+	pointer-events: auto;
+}
 .tcg-hand-mine .tcg-card-selected {
 	z-index: 55 !important;
 }
