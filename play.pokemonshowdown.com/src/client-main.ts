@@ -678,6 +678,11 @@ class PSUser extends PSStreamModel<PSLoginState | null> {
 		this.named = named;
 		this.avatar = avatar;
 		this.away = fullName.endsWith('@!');
+		try {
+			if (named && this.userid && !/^guest\d+$/.test(this.userid)) {
+				localStorage.setItem('showdown_username', this.name);
+			}
+		} catch {}
 		this.update(null);
 		if (loggingIn) {
 			for (const roomid in PS.rooms) {
@@ -811,6 +816,9 @@ class PSUser extends PSStreamModel<PSLoginState | null> {
 			'logout', { userid: this.userid }
 		);
 		PS.send(`/logout`);
+		try {
+			localStorage.removeItem('showdown_username');
+		} catch {}
 		PS.connection?.disconnect();
 
 		PS.alert("You have been logged out and disconnected.\n\nIf you wanted to change your name while staying connected, use the 'Change Name' button or the '/nick' command.");
@@ -2414,6 +2422,12 @@ export const PS = new class extends PSModel {
 		// If we don't have both a left room and a right room, obviously
 		// just show one room
 		if (!this.leftPanel || !this.rightPanel || this.prefs.onepanel) {
+			return 0;
+		}
+		// TCG boards need the whole window. A chat room such as Lobby would
+		// otherwise stay open in the right panel.
+		const focused = this.panel;
+		if (focused?.type === 'battle' && (focused.id.split('-')[1] || '').startsWith('tcg')) {
 			return 0;
 		}
 

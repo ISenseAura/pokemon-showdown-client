@@ -12,12 +12,23 @@ import { Dex, PSUtils, toID, type ID } from "./battle-dex";
 import { Teams } from "./battle-teams";
 import { BattleLog } from "./battle-log";
 import { TeamEditorState } from "./battle-team-editor";
+import { isTcgFormatId, packTcgDeck } from "./battle-tcg-deck";
 
 const ADD_FORMAT_FOLDER_VALUE = '+';
 const ADD_FOLDER_VALUE = '++';
 
 class TeambuilderRoom extends PSRoom {
-	readonly DEFAULT_FORMAT = Dex.modid;
+	readonly DEFAULT_FORMAT = (() => {
+		const formats = typeof BattleFormats !== 'undefined' ? BattleFormats : null;
+		if (formats) {
+			const hit = Object.keys(formats).find(id => {
+				const bare = id.replace(/^gen\d/, '');
+				return bare === 'tcgstandard' && !id.includes('random');
+			});
+			if (hit) return hit as ID;
+		}
+		return Dex.modid;
+	})();
 
 	/**
 	 * - `""` - all
@@ -59,7 +70,7 @@ class TeambuilderRoom extends PSRoom {
 		},
 		'deleteteam'(target) {
 			const team = PS.teams.byKey[target];
-			if (!team) return this.errorReply(`Team not found: ${target}`);
+			if (!team) return this.errorReply(`Deck not found: ${target}`);
 
 			PS.teams.delete(team);
 			PS.teams.save();
@@ -67,7 +78,7 @@ class TeambuilderRoom extends PSRoom {
 		},
 		'copyteam'(target, cmd, elem) {
 			const team = PS.teams.byKey[target];
-			if (!team) return this.errorReply(`Team not found: ${target}`);
+			if (!team) return this.errorReply(`Deck not found: ${target}`);
 
 			const teamElem = elem?.closest('li')?.querySelector<HTMLElement>('a.team');
 			this.preserveTeamScroll(team, teamElem);
@@ -78,7 +89,7 @@ class TeambuilderRoom extends PSRoom {
 		},
 		'pasteteamabove,moveteamabove'(target, cmd, elem) {
 			const team = PS.teams.byKey[target];
-			if (target !== '-' && !team) return this.errorReply(`Team not found: ${target}`);
+			if (target !== '-' && !team) return this.errorReply(`Deck not found: ${target}`);
 
 			const index = team ? PS.teams.list.indexOf(team) : PS.teams.list.length;
 			const folder = this.curFolder?.endsWith('/') ? this.curFolder.slice(0, -1) : '';
@@ -114,7 +125,7 @@ class TeambuilderRoom extends PSRoom {
 				name = name.replace(/[\\/]/g, '');
 			}
 			if (name.includes('|')) {
-				this.errorReply("Names can't contain the character |, since they're used for storing teams.");
+				this.errorReply("Names can't contain the character |, since they're used for storing decks.");
 				name = name.replace(/\|/g, '');
 			}
 
@@ -132,7 +143,7 @@ class TeambuilderRoom extends PSRoom {
 				name = name.replace(/[\\/]/g, '');
 			}
 			if (name.includes('|')) {
-				PS.alert("Names can't contain the character |, since they're used for storing teams.");
+				PS.alert("Names can't contain the character |, since they're used for storing decks.");
 				name = name.replace(/\|/g, '');
 			}
 
@@ -217,7 +228,7 @@ class TeambuilderRoom extends PSRoom {
 				name: `${isBox ? "Box" : "Untitled"} ${PS.teams.list.length + 1}`,
 				format,
 				folder,
-				packedTeam: '',
+				packedTeam: isTcgFormatId(format) ? packTcgDeck([]) : '',
 				iconCache: null,
 				isBox,
 				key: '',
@@ -244,7 +255,7 @@ class TeambuilderPanel extends PSRoomPanel<TeambuilderRoom> {
 	static readonly routes = ['teambuilder'];
 	static readonly Model = TeambuilderRoom;
 	static readonly icon = <i class="fa fa-pencil-square-o" aria-hidden></i>;
-	static readonly title = 'Teambuilder';
+	static readonly title = 'Decks';
 	mobileFormatFolderButton: HTMLButtonElement | null = null;
 	backupCopiedTimeout: ReturnType<typeof setTimeout> | null = null;
 	override componentDidUpdate() {
@@ -419,7 +430,7 @@ class TeambuilderPanel extends PSRoomPanel<TeambuilderRoom> {
 			try {
 				sets = Teams.import(result);
 			} catch {
-				PS.alert(`Your file "${file.name}" is not a valid team.`);
+				PS.alert(`Your file "${file.name}" is not a valid deck.`);
 				return null;
 			}
 			let format = '';
@@ -638,7 +649,7 @@ class TeambuilderPanel extends PSRoomPanel<TeambuilderRoom> {
 		const elem = ev.currentTarget as HTMLElement;
 		ev.stopImmediatePropagation();
 		ev.preventDefault();
-		PS.confirm(`Delete \`\`${oldFolder}\`\`? (doesn't delete teams)`, {
+		PS.confirm(`Delete \`\`${oldFolder}\`\`? (doesn't delete decks)`, {
 			okButton: "Delete", otherButtons: <button class="button" data-cmd="/closeand /inopener /convertfoldertoprefix">Convert to prefix</button>,
 			parentElem: elem,
 		}).then(result => {
@@ -747,7 +758,7 @@ class TeambuilderPanel extends PSRoomPanel<TeambuilderRoom> {
 		for (const folder of this.getFolderList()) {
 			if (folder.endsWith('/')) {
 				renderedFolders.push(
-					<option value={folder}>{folder.slice(0, -1) || 'Teams not in any folders'}</option>
+					<option value={folder}>{folder.slice(0, -1) || 'Decks not in any folders'}</option>
 				);
 			} else {
 				const gen = parseInt(folder.charAt(3), 10);
@@ -822,14 +833,14 @@ class TeambuilderPanel extends PSRoomPanel<TeambuilderRoom> {
 
 		let filterFolder: string | null = null;
 		let filterFormat: string | null = null;
-		let teamTerm = 'team';
+		let teamTerm = 'deck';
 		if (room.curFolder) {
 			if (room.curFolder.endsWith('/')) {
 				filterFolder = room.curFolder.slice(0, -1);
-				teamTerm = 'team in folder';
+				teamTerm = 'deck in folder';
 			} else {
 				filterFormat = room.curFolder;
-				if (filterFormat !== Dex.modid) teamTerm = BattleLog.formatName(filterFormat) + ' team';
+				if (filterFormat !== Dex.modid) teamTerm = BattleLog.formatName(filterFormat) + ' deck';
 			}
 		}
 
@@ -898,7 +909,7 @@ class TeambuilderPanel extends PSRoomPanel<TeambuilderRoom> {
 						this.renderMobileFolderSelect()
 					) : (
 						<span class="teambuilder-folder-title">
-							<i class="fa fa-folder-open-o" aria-hidden></i> Teams not in any folders
+							<i class="fa fa-folder-open-o" aria-hidden></i> Decks not in any folders
 						</span>
 					)}
 				</h2>
@@ -917,7 +928,7 @@ class TeambuilderPanel extends PSRoomPanel<TeambuilderRoom> {
 					{narrow ? (
 						this.renderMobileFolderSelect()
 					) : (
-						<span class="teambuilder-folder-title">All Teams <small>({teams.length})</small></span>
+						<span class="teambuilder-folder-title">All Decks <small>({teams.length})</small></span>
 					)}
 				</h2>
 			)}
@@ -929,17 +940,17 @@ class TeambuilderPanel extends PSRoomPanel<TeambuilderRoom> {
 					<i class="fa fa-archive" aria-hidden></i> New box
 				</button>
 				<input
-					type="search" class="textbox" placeholder="Search teams"
+					type="search" class="textbox" placeholder="Search decks"
 					style="margin-left:5px;" onKeyUp={this.updateSearch}
 				></input>
 			</p>
 			<ul class="teamlist">
 				{!teams.length ? (
-					<li><em>you have no teams lol</em></li>
+					<li><em>you have no decks</em></li>
 				) : !filteredTeams.length && room.searchTerms.length ? (
-					<li><em>you have no teams matching <code>{room.searchTerms.join(", ")}</code></em></li>
+					<li><em>you have no decks matching <code>{room.searchTerms.join(", ")}</code></em></li>
 				) : !filteredTeams.length ? (
-					<li><em>you have no teams in this folder</em></li>
+					<li><em>you have no decks in this folder</em></li>
 				) : filteredTeams.map(team => team ? (
 					<li
 						key={team.key} data-teamkey={team.key}

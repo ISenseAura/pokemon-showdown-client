@@ -1,0 +1,519 @@
+/* Compact TCG deck strip in All Decks / team dropdown (never grows with 60 cards) */
+.tcg-team-icons {
+	display: inline-flex;
+	align-items: flex-end;
+	max-width: 148px;
+	overflow: hidden;
+	vertical-align: middle;
+	flex-shrink: 0;
+}
+.tcg-team-icons img,
+.tcg-team-icon-fallback {
+	width: 22px;
+	height: 31px;
+	object-fit: cover;
+	border-radius: 2px;
+	margin-right: -5px;
+	border: 1px solid rgba(0, 0, 0, 0.22);
+	background: #EEF2F5;
+	box-shadow: 1px 0 0 rgba(255, 255, 255, 0.35);
+}
+.dark .tcg-team-icons img,
+.dark .tcg-team-icon-fallback {
+	border-color: #34373b;
+	background: #0D151E;
+}
+.tcg-team-icons img:last-child,
+.tcg-team-icons .tcg-team-icon-fallback:last-child {
+	margin-right: 0;
+}
+.tcg-team-icon-fallback {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 8px;
+	font-weight: 700;
+	overflow: hidden;
+}
+.tcg-team-meta {
+	margin-left: 6px;
+	white-space: nowrap;
+	vertical-align: middle;
+	font-size: 11px;
+	opacity: 0.85;
+}
+
+/* TCG deck builder — inherits PS room / popup theme colors */
+
+.tcg-deck-builder {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-height: calc(100vh - 160px);
+	padding: 0 8px 16px;
+	color: inherit;
+}
+.tcg-deck-tabs {
+	margin: 0;
+	flex-shrink: 0;
+}
+.tcg-deck-main {
+	/* Deck composition first (left / top), card browser second. */
+	display: grid;
+	grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+	gap: 12px;
+	align-items: stretch;
+	flex: 1;
+	min-height: 0;
+}
+.tcg-deck-builder.narrow .tcg-deck-main {
+	grid-template-columns: 1fr;
+}
+.tcg-deck-builder.narrow .tcg-deck-rail {
+	max-height: 28vh;
+}
+.tcg-deck-builder.narrow .tcg-deck-lists {
+	min-height: 0;
+}
+
+.tcg-deck-import {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	flex: 1;
+	min-height: 0;
+	max-width: 720px;
+}
+.tcg-deck-import-help {
+	margin: 0;
+	font-size: 12px;
+	opacity: 0.85;
+}
+.tcg-deck-import-help code {
+	font-size: 11px;
+}
+.tcg-deck-import-box {
+	width: 100%;
+	box-sizing: border-box;
+	min-height: 280px;
+	flex: 1;
+	font-family: Consolas, "Andale Mono", monospace;
+	font-size: 12px;
+	line-height: 1.4;
+	resize: vertical;
+}
+.tcg-deck-import-actions {
+	margin: 0;
+	text-align: left;
+}
+.tcg-deck-import-msgs {
+	font-size: 12px;
+}
+.tcg-deck-import-warn {
+	color: #aa7711;
+}
+.dark .tcg-deck-import-warn {
+	color: #ddbb44;
+}
+.tcg-deck-import-err {
+	color: #cc2222;
+}
+.dark .tcg-deck-import-err {
+	color: #ee6666;
+}
+
+.tcg-deck-browser {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	color: inherit;
+	background: transparent;
+	padding: 0 2px;
+}
+.tcg-deck-searchbar {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin-bottom: 10px;
+}
+.tcg-deck-search {
+	width: 100%;
+	box-sizing: border-box;
+}
+.tcg-deck-chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	align-items: center;
+}
+.tcg-deck-chips .button {
+	font-size: 11px;
+	padding: 3px 8px;
+}
+
+.tcg-deck-results {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+	gap: 8px;
+	overflow: auto;
+	flex: 1;
+	min-height: 200px;
+	padding-bottom: 8px;
+}
+.tcg-deck-card {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	background: #fff;
+	border: 1px solid #AAAAAA;
+	border-radius: 6px;
+	padding: 4px;
+	color: inherit;
+	text-align: left;
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+	transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.dark .tcg-deck-card {
+	background: #2b2c31;
+	border-color: #34373b;
+	box-shadow: 0.5px 1px 2px rgba(255, 255, 255, 0.2);
+	color: #DDD;
+}
+.tcg-deck-card:hover {
+	border-color: #777777;
+	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+}
+.dark .tcg-deck-card:hover {
+	border-color: #50555b;
+	box-shadow: 0.5px 1px 2px rgba(255, 255, 255, 0.35);
+}
+.tcg-deck-card.in-deck {
+	border-color: #3a7;
+	box-shadow: 0 0 0 1px rgba(51, 170, 119, 0.35);
+}
+.dark .tcg-deck-card.in-deck {
+	border-color: #4a9;
+	box-shadow: 0 0 0 1px rgba(68, 170, 153, 0.45);
+}
+.tcg-deck-card-art {
+	display: block;
+	width: 100%;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	cursor: pointer;
+	border-radius: 4px;
+	color: inherit;
+}
+.tcg-deck-card-art:hover {
+	filter: brightness(1.03);
+}
+.tcg-deck-card img {
+	width: 100%;
+	aspect-ratio: 63 / 88;
+	object-fit: cover;
+	border-radius: 4px;
+	background: #EEF2F5;
+	display: block;
+}
+.dark .tcg-deck-card img {
+	background: #0D151E;
+}
+.tcg-deck-card-fallback {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	aspect-ratio: 63 / 88;
+	font-size: 11px;
+	padding: 6px;
+	text-align: center;
+	background: #EEF2F5;
+	border-radius: 4px;
+}
+.dark .tcg-deck-card-fallback {
+	background: #0D151E;
+}
+.tcg-deck-card-meta {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	padding: 4px 2px 0;
+}
+.tcg-deck-card-meta strong {
+	font-size: 11px;
+	line-height: 1.2;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.tcg-deck-card-meta small {
+	font-size: 10px;
+	opacity: 0.7;
+}
+.tcg-deck-card-qty {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	padding: 4px 0 2px;
+}
+.tcg-deck-card-qty .tcg-deck-qty {
+	width: 26px;
+	height: 26px;
+	font-size: 16px;
+	font-weight: 700;
+}
+.tcg-deck-card-qty .tcg-deck-qty-n {
+	min-width: 1.4em;
+	text-align: center;
+	font-weight: 800;
+	font-size: 13px;
+}
+
+/* Modal: layout only — colors come from .ps-overlay / .ps-popup */
+.tcg-deck-modal {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 24px;
+	z-index: 1000;
+}
+.tcg-deck-modal.ps-overlay {
+	/* override default overlay scroll layout for a centered dialog */
+	overflow: auto;
+}
+.tcg-deck-modal .tcg-deck-modal-card.ps-popup {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 12px;
+	margin: auto;
+	max-width: min(360px, 92vw);
+	max-height: 92vh;
+	padding: 16px 16px 14px;
+	overflow: auto;
+}
+.tcg-deck-modal-card img {
+	width: 100%;
+	max-height: min(70vh, 520px);
+	object-fit: contain;
+	border-radius: 6px;
+	background: #EEF2F5;
+}
+.dark .tcg-deck-modal-card img {
+	background: #0D151E;
+}
+.tcg-deck-modal-close {
+	position: absolute;
+	top: 8px;
+	right: 8px;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	font-size: 18px;
+	line-height: 1;
+	z-index: 1;
+}
+.tcg-deck-modal-info {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 2px;
+	text-align: center;
+	font-size: 13px;
+	width: 100%;
+}
+.tcg-deck-modal-info strong {
+	font-size: 18px;
+}
+.tcg-deck-modal-qty {
+	padding-top: 8px;
+}
+.tcg-deck-modal-qty .tcg-deck-qty {
+	width: 32px;
+	height: 32px;
+	font-size: 18px;
+}
+
+.tcg-deck-rail {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	background: #E1E8E8;
+	color: inherit;
+	border-radius: 6px;
+	padding: 8px 10px;
+	border: 1px solid #AAAAAA;
+	box-shadow: inset 1px 1px 0 #ffffff, inset -1px -1px 0 #DDDDDD;
+	min-height: 0;
+}
+.dark .tcg-deck-rail {
+	background: #0D151E;
+	color: #DDD;
+	border-color: #34373b;
+	box-shadow: inset 0.5px 1px 1px rgba(255, 255, 255, 0.35);
+}
+.tcg-deck-rail-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px 12px;
+}
+.tcg-deck-count {
+	font-size: 20px;
+	font-weight: 800;
+	letter-spacing: -0.02em;
+	line-height: 1;
+}
+.tcg-deck-count small {
+	font-size: 13px;
+	font-weight: 700;
+	opacity: 0.65;
+	margin-left: 1px;
+}
+.tcg-deck-count.ok { color: #228844; }
+.tcg-deck-count.short { color: #aa7711; }
+.tcg-deck-count.over { color: #cc2222; }
+.dark .tcg-deck-count.ok { color: #55cc77; }
+.dark .tcg-deck-count.short { color: #ddbb44; }
+.dark .tcg-deck-count.over { color: #ee6666; }
+.tcg-deck-split {
+	display: flex;
+	flex: 1;
+	gap: 10px;
+	font-size: 11px;
+	font-weight: 600;
+	opacity: 0.8;
+}
+.tcg-deck-validate {
+	margin-left: auto;
+	font-size: 11px;
+	padding: 3px 8px;
+}
+
+.tcg-deck-energy-quick {
+	padding-top: 2px;
+}
+.tcg-deck-energy-quick small {
+	display: block;
+	font-weight: 700;
+	margin-bottom: 3px;
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	opacity: 0.7;
+}
+.tcg-deck-energy-quick .button {
+	font-size: 10px;
+	padding: 2px 6px;
+}
+
+.tcg-deck-lists {
+	flex: 1;
+	overflow: auto;
+	min-height: 48px;
+}
+.tcg-deck-lists h3 {
+	margin: 4px 0 2px;
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	opacity: 0.7;
+}
+.tcg-deck-lists ul {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+.tcg-deck-lists li {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 0;
+	font-size: 13px;
+}
+.tcg-deck-qty {
+	width: 22px;
+	height: 22px;
+	border-radius: 4px;
+	border: 1px solid #AAAAAA;
+	background: #f6f6f6;
+	background: linear-gradient(to bottom, #f6f6f6, #d3d3d3);
+	color: #222;
+	cursor: pointer;
+	line-height: 1;
+	padding: 0;
+}
+.tcg-deck-qty:hover:not(:disabled) {
+	background: #ffffff;
+	background: linear-gradient(to bottom, #ffffff, #e3e3e3);
+	border-color: #777777;
+}
+.tcg-deck-qty:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+.dark .tcg-deck-qty {
+	background: #2b2c31;
+	background: linear-gradient(to bottom, #393d46, #2b2c31);
+	border-color: #34373b;
+	color: #F9F9F9;
+}
+.dark .tcg-deck-qty:hover:not(:disabled) {
+	background: #3e4149;
+	background: linear-gradient(to bottom, #646877, #3e4149);
+	border-color: #50555b;
+}
+.tcg-deck-qty-n {
+	min-width: 1.2em;
+	text-align: center;
+	font-weight: 700;
+}
+.tcg-deck-line-name {
+	border: 0;
+	background: transparent;
+	cursor: pointer;
+	text-align: left;
+	padding: 0;
+	color: inherit;
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.tcg-deck-line-name:hover {
+	text-decoration: underline;
+}
+
+.tcg-deck-legal {
+	border-top: 1px solid #AAAAAA;
+	padding-top: 4px;
+	font-size: 11px;
+}
+.dark .tcg-deck-legal { border-color: #34373b; }
+.tcg-deck-legal.bad { color: #cc2222; }
+.dark .tcg-deck-legal.bad { color: #ee6666; }
+.tcg-deck-legal ul {
+	margin: 0;
+	padding-left: 16px;
+}
+.tcg-deck-loading, .tcg-deck-empty {
+	opacity: 0.7;
+	font-size: 12px;
+	padding: 6px 2px;
+	margin: 0;
+}
+
+@media (max-width: 700px) {
+	.tcg-deck-main {
+		grid-template-columns: 1fr;
+	}
+	.tcg-deck-rail {
+		max-height: 28vh;
+	}
+	.tcg-deck-results {
+		grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+		max-height: 45vh;
+	}
+}

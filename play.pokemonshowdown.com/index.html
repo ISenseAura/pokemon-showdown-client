@@ -30,6 +30,7 @@ https://psim.us/dev
 	<link rel="stylesheet" href="/style/battle.css?150dd6e1" />
 	<link rel="stylesheet" href="/style/client2.css?4b594ff6" />
 	<link rel="stylesheet" href="/style/teambuilder.css?c05746da" />
+	<meta name="robots" content="noindex" />
 	<meta http-equiv="X-UA-Compatible" content="IE=Edge" />
 	<!--[if lte IE 8]><script>
 		window.Config = {"oldie": true};
@@ -44,9 +45,13 @@ https://psim.us/dev
 			<div class="mainmenu-mini-windows">
 				<div class="mini-window" data-roomid="news">
 					<h3 class="mini-window-header"><button class="closebutton" tabindex="-1" aria-label="Close"><i class="fa fa-times-circle"></i></button>News</h3>
-					<div id="room-news" class="mini-window-contents ps-room-light scrollable" style="height: auto;" data-newsid="0">
+					<div id="room-news" class="mini-window-contents ps-room-light scrollable" style="height: auto;" data-newsid="1">
 						<div class="readable-bg">
-							[failed to retrieve news]
+							<div class="newsentry" data-newsid="1">
+								<h4>Welcome to PTCG Simulator</h4>
+								<p>This is a fan-made Pok&eacute;mon Trading Card Game simulator built on Pok&eacute;mon Showdown. Build Standard and Pocket decks, challenge other players, and battle in your browser. It is an unofficial project and is not affiliated with Nintendo, The Pok&eacute;mon Company, Creatures, GAME FREAK, or Pok&eacute;mon TCG Live.</p>
+								<p>&mdash;<strong>pokem9n</strong> <small class="date">on Oct 2, 2026</small></p>
+							</div>
 						</div>
 					</div>
 				</div>
@@ -64,7 +69,7 @@ https://psim.us/dev
 		</div>
 	</div>
 	<script nomodule defer src="/js/lib/ps-polyfill.js"></script>
-	<script defer src="/config/config.js?5048072d"></script>
+	<script defer src="/config/config.js?54149621"></script>
 	<script defer src="/js/client-core.js?f2c118b3"></script>
 	<!-- At this point, background and dark mode are loaded -->
 	<!-- config/head-custom.html -->
@@ -79,20 +84,21 @@ https://psim.us/dev
 		linkStyle("/style/utilichart.css?a427c1ed");
 		linkStyle("/style/battle-search.css?1217e174");
 		linkStyle("/style/font-awesome.css");
-		linkStyle("/style/tcg.css?f7ca6dca");
+		linkStyle("/style/tcg.css?0be07b58");
+		linkStyle("/style/tcg-deck.css?a9e58fa8");
 	</script>
 
 	<script defer src="/js/battle-dex-data.js?6239d250"></script>
 	<script defer src="/js/battle-dex.js?87e715f4"></script>
 	<script defer src="/js/battle-teams.js?b117891d"></script>
 	<script defer src="/js/battle-text-parser.js?d35db83b"></script>
-	<script defer src="/js/client-main.js?62ccc112"></script>
+	<script defer src="/js/client-main.js?2eb83ee5"></script>
 	<script nomodule defer src="/js/lib/sockjs-1.4.0-nwjsfix.min.js?67689b87"></script>
-	<script defer src="/js/client-connection.js?740403ed"></script>
+	<script defer src="/js/client-connection.js?1050eb87"></script>
 
 	<script defer src="/js/lib/preact.min.js?ab81f06a"></script>
 	<script defer src="/js/panels.js?4d44a20f"></script>
-	<script defer src="/js/panel-mainmenu.js?2dbe091f"></script>
+	<script defer src="/js/panel-mainmenu.js?e9ea6c2b"></script>
 	<script defer src="/js/panel-rooms.js?032fb442"></script>
 	<script defer src="/js/panel-topbar.js?05eb0985"></script>
 	<!-- at this point, the main view is loaded and usable -->
@@ -104,12 +110,12 @@ https://psim.us/dev
 
 	<script defer src="/js/miniedit.js?abe8aba0"></script>
 	<script defer src="/js/panel-chat-tournament.js?fa278a7f"></script>
-	<script defer src="/js/panel-chat.js?326bab0f"></script>
+	<script defer src="/js/panel-chat.js?6523cb28"></script>
 	<!-- at this point, chatrooms are usable -->
 
-	<script defer src="/js/panel-popups.js?0bbd968d"></script>
+	<script defer src="/js/panel-popups.js?d9413b12"></script>
 	<script defer src="/js/panel-page.js?26474644"></script>
-	<script defer src="/js/panel-ladder.js?161126d0"></script>
+	<script defer src="/js/panel-ladder.js?edfdefb5"></script>
 	<script defer src="/js/panel-resources.js?2c018232"></script>
 
 	<script defer src="/js/battle-sound.js"></script>
@@ -120,8 +126,8 @@ https://psim.us/dev
 	<script defer src="/js/battle-tooltips.js?b47b083f"></script>
 	<script defer src="/js/battle.js?acf10c9c"></script>
 	<script defer src="/js/battle-choices.js?049bcc75"></script>
-	<script defer src="/js/battle-tcg.js?3531e9ae"></script>
-	<script defer src="/js/panel-battle.js?8125b002"></script>
+	<script defer src="/js/battle-tcg.js?85e4d2f4"></script>
+	<script defer src="/js/panel-battle.js?72b9dff8"></script>
 
 	<script defer src="/data/pokedex.js?3c530f2a"></script>
 	<script defer src="/data/moves.js?dff2b088"></script>
@@ -129,15 +135,17 @@ https://psim.us/dev
 	<script defer src="/data/abilities.js?5657be2e"></script>
 	<script defer src="/data/search-index.js?8ae4ac0a"></script>
 	<script defer src="/data/teambuilder-tables.js?2707b223"></script>
-	<script defer src="/js/panel-teamdropdown.js?d9e90323"></script>
-	<script defer src="/js/panel-teambuilder.js?85e382fb"></script>
+	<script defer src="/js/battle-tcg-deck.js?c1890483"></script>
+	<script defer src="/js/panel-teamdropdown.js?0e86aef8"></script>
+	<script defer src="/js/panel-teambuilder.js?d6c34164"></script>
 	<script defer src="/js/battle-dex-search.js?75d6ba00"></script>
 	<script defer src="/js/battle-searchresults.js?e9fb93e8"></script>
 	<script defer src="/js/battle-team-editor.js?c1834134"></script>
-	<script defer src="/js/panel-teambuilder-team.js?986acf58"></script>
+	<script defer src="/js/panel-tcg-deck.js?d7188a14"></script>
+	<script defer src="/js/panel-teambuilder-team.js?51984deb"></script>
 
-	<script defer src="/data/pokedex-mini.js?12672087"></script>
-	<script defer src="/data/pokedex-mini-bw.js?20862761"></script>
+	<script defer src="/data/pokedex-mini.js?42499130"></script>
+	<script defer src="/data/pokedex-mini-bw.js?29027839"></script>
 	<script defer src="/data/typechart.js?17da8369"></script>
 	<script defer src="/data/aliases.js?ff3476a5"></script>
 	<script defer src="/js/lib/d3.v3.min.js"></script>

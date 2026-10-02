@@ -217,21 +217,27 @@ replayEmbedContents = replayEmbedContents.replace(/play\.pokemonshowdown\.com/g,
 // add news, only if it's actually likely to exist
 process.stdout.write("and news... ");
 let stdout = '';
-let newsid = 0;
-let news = '[failed to retrieve news]';
+let newsid = 1;
+let news = [
+	'<div class="newsentry" data-newsid="1">',
+	'<h4>Welcome to PTCG Simulator</h4>',
+	'<p>This is a fan-made Pok&eacute;mon Trading Card Game simulator built on Pok&eacute;mon Showdown. Build Standard and Pocket decks, challenge other players, and battle in your browser. It is an unofficial project and is not affiliated with Nintendo, The Pok&eacute;mon Company, Creatures, GAME FREAK, or Pok&eacute;mon TCG Live.</p>',
+	'<p>&mdash;<strong>pokem9n</strong> <small class="date">on Oct 2, 2026</small></p>',
+	'</div>',
+].join('');
 try {
 	stdout = child_process.execSync('php build-tools/news-embed.php', {
 		stdio: 'pipe',
 	});
 } catch (e) {
-	console.log("git hook failed to retrieve news (exec command failed):\n" + (e.error + e.stderr + e.stdout));
+	console.log("news.inc.php unavailable; using PTCG welcome news");
 }
 try {
 	if (stdout) [newsid, news] = JSON.parse(stdout);
 } catch (e) {
-	if (stdout.includes("config/news.inc.php): Failed to open stream: No such file or directory")) {
-		console.log("news.inc.php unavailable");
-	} else {
+	if (String(stdout).includes("config/news.inc.php): Failed to open stream: No such file or directory")) {
+		console.log("news.inc.php unavailable; using PTCG welcome news");
+	} else if (stdout) {
 		console.log("git hook failed to retrieve news (parsing JSON failed):\n\n" + e.message + '\n\n' + stdout);
 	}
 }
@@ -240,6 +246,13 @@ indexContents = indexContents.replace(/<!-- newsid -->/g, newsid);
 indexContents = indexContents.replace(/<!-- build-tools\/news-embed\.php -->/g, news);
 preactIndexContents = preactIndexContents.replace(/<!-- newsid -->/g, newsid);
 preactIndexContents = preactIndexContents.replace(/<!-- build-tools\/news-embed\.php -->/g, news);
+// Keep inlined PTCG news in index-new.html when the PHP placeholder is already gone.
+if (!preactIndexContents.includes('data-newsid="1"') && !preactIndexContents.includes('Welcome to PTCG Simulator')) {
+	preactIndexContents = preactIndexContents.replace(
+		/<div class="readable-bg">\s*<\/div>/,
+		`<div class="readable-bg">${news}</div>`
+	);
+}
 
 let indexContents2 = '';
 try {

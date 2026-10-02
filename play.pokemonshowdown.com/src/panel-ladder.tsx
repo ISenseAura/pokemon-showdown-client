@@ -279,7 +279,8 @@ class LadderListPanel extends PSRoomPanel {
 		let currentSection = "";
 		const buf: JSX.Element[] = [];
 		for (const [id, format] of Object.entries(BattleFormats)) {
-			if (!format.rated || !format.searchShow) continue;
+			if (!toID(id).replace(/^gen\d/, '').startsWith('tcg')) continue;
+			if (format.searchShow === false) continue;
 			if (format.section !== currentSection) {
 				currentSection = format.section;
 				buf.push(<h3>{currentSection}</h3>);

@@ -194,8 +194,9 @@ class UserPanel extends PSRoomPanel<UserRoom> {
 				roomid = toRoomid(roomid);
 
 				if (roomid.substr(0, 7) === 'battle-') {
-					const p1 = curRoom.p1!.substr(1);
-					const p2 = curRoom.p2!.substr(1);
+					// Waiting / unfinished battles (and some TCG rooms) may omit p1/p2.
+					const p1 = (curRoom.p1 || '').substr(1);
+					const p2 = (curRoom.p2 || '').substr(1);
 					const ownBattle = (PS.user.userid === toUserid(p1) || PS.user.userid === toUserid(p2));
 					const roomLink = <a
 						href={`/${roomid}`} class={'ilink' + (ownBattle || roomid in PS.rooms ? ' yours' : '')}
@@ -1911,8 +1912,9 @@ class BattleTimerPanel extends PSRoomPanel {
 
 	override render() {
 		const room = this.props.room.getParent() as BattleRoom;
+		const kicking = room.tcgMode ? room.tcgKickingInactive : room.battle?.kickingInactive;
 		return <PSPanelWrapper room={this.props.room}><div class="pad">
-			{room.battle.kickingInactive ? (
+			{kicking ? (
 				<button class="button" data-cmd="/closeand /inopener /timer stop">Stop Timer</button>
 			) : (
 				<button class="button" data-cmd="/closeand /inopener /timer start">Start Timer</button>

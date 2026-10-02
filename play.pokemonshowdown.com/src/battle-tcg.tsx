@@ -35,6 +35,8 @@ export interface TcgPokemonView {
 	burned?: boolean;
 	image?: string;
 	lastDelta?: number;
+	/** Opponent's setup Pokémon: placed face down until both players are ready (client-side placeholder). */
+	faceDown?: boolean;
 }
 
 export interface TcgPlayerView {
@@ -76,7 +78,7 @@ type Preview = { cardId: string, image?: string, name?: string };
 /** One replay-player FX beat (Unreal-Bot graphics.js fxFor + hits). */
 type FxHit = {
 	iid: string, amount?: number, kind: 'damage' | 'heal' | 'status',
-	src?: string, label?: string,
+	src?: string, label?: string, element?: string,
 };
 type FxBeat = {
 	kind: string,
@@ -97,9 +99,14 @@ type FxBeat = {
 	ids?: string[],
 	labels?: string[],
 	hits?: FxHit[],
+	/** Ordered heads/tails results for a coin beat (one or many flips). */
+	coins?: boolean[],
 	tie?: boolean,
+	element?: string,
+	slot?: TcgSlot,
+	fromBench?: boolean,
 };
-type PkFx = { cls: string, dataFx?: string, tick?: number };
+type PkFx = { cls: string, dataFx?: string, tick?: number, element?: string };
 type KoGhost = {
 	iid: string,
 	cardId: string,
@@ -130,15 +137,104 @@ function actorIsYou(seat: number | undefined, you?: number | null): boolean {
 	return you != null && seat != null && seat === you;
 }
 function findMonView(players: TcgPlayerView[] | undefined, iid?: string): TcgPokemonView | null {
+	return findMonSlot(players, iid)?.mon || null;
+}
+function findMonSlot(
+	players: TcgPlayerView[] | undefined,
+	iid?: string,
+): { seat: number, slot: TcgSlot, mon: TcgPokemonView } | null {
 	if (!iid || !players) return null;
-	for (const p of players) {
-		if (p.active?.iid === iid) return p.active;
-		for (const m of p.bench || []) if (m?.iid === iid) return m;
+	for (let seat = 0; seat < players.length; seat++) {
+		const p = players[seat];
+		if (!p) continue;
+		if (p.active?.iid === iid) return { seat, slot: 'active', mon: p.active };
+		const bench = p.bench || [];
+		for (let i = 0; i < bench.length; i++) {
+			if (bench[i]?.iid === iid) return { seat, slot: i, mon: bench[i]! };
+		}
 	}
 	return null;
 }
+function placeSlotOf(e: TcgEvent): TcgSlot {
+	if (e.slot === 'active' || e.slot == null || e.slot === '') return 'active';
+	const n = Number(e.slot);
+	return Number.isFinite(n) ? n : 'active';
+}
+/** Names from earlier boards, so a KO still has a name after the Pokémon leaves play. */
+const seenMonNames = new Map<string, string>();
+const seenCardNames = new Map<string, string>();
+export function noteTcgMons(players: TcgPlayerView[] | undefined) {
+	if (!players) return;
+	for (const p of players) {
+		const mons = [p?.active, ...(p?.bench || [])];
+		for (const mon of mons) {
+			if (mon?.iid && mon.name) seenMonNames.set(mon.iid, mon.name);
+			if (mon?.cardId && mon.name && mon.name !== mon.cardId) seenCardNames.set(mon.cardId, mon.name);
+		}
+	}
+}
 function monName(players: TcgPlayerView[] | undefined, iid?: string): string {
-	return findMonView(players, iid)?.name || 'a Pokémon';
+	return findMonView(players, iid)?.name || (iid && seenMonNames.get(iid)) || 'a Pokémon';
+}
+const printedNames: { [id: string]: string } = {
+	'base1-97': 'Grass Energy',
+	'base1-98': 'Fire Energy',
+	'base1-99': 'Water Energy',
+	'base1-100': 'Lightning Energy',
+	'base1-101': 'Psychic Energy',
+	'base1-102': 'Fighting Energy',
+	// Scarlet & Violet basic Energy (the Pocket Energy Zone attaches these ids).
+	'sve-1': 'Grass Energy', 'sve-2': 'Fire Energy', 'sve-3': 'Water Energy', 'sve-4': 'Lightning Energy',
+	'sve-5': 'Psychic Energy', 'sve-6': 'Fighting Energy', 'sve-7': 'Darkness Energy', 'sve-8': 'Metal Energy',
+	'sve-9': 'Grass Energy', 'sve-10': 'Fire Energy', 'sve-11': 'Water Energy', 'sve-12': 'Lightning Energy',
+	'sve-13': 'Psychic Energy', 'sve-14': 'Fighting Energy', 'sve-15': 'Darkness Energy', 'sve-16': 'Metal Energy',
+};
+const printedNamesLoaded: { [file: string]: boolean } = {};
+function loadPrintedNames(file = '/tcg-names.json') {
+	if (printedNamesLoaded[file] || typeof fetch !== 'function') return;
+	printedNamesLoaded[file] = true;
+	fetch(file).then(res => res.ok ? res.json() : null).then(data => {
+		if (data) Object.assign(printedNames, data);
+	}).catch(() => { /* keep board names and the basic-energy map */ });
+}
+loadPrintedNames();
+/** The paper (Standard / Expanded / GLC) card index is ~20k entries; only pull it for a paper game. */
+export function loadPaperNames() {
+	loadPrintedNames('/tcg-names-paper.json');
+}
+function printedName(id?: string): string {
+	if (!id) return '';
+	if (printedNames[id]) return printedNames[id];
+	const promo = /^P-([A-Za-z])-0*(\d+)$/.exec(id);
+	if (promo) {
+		const key = `PROMO-${promo[1].toUpperCase()}-${promo[2]}`;
+		if (printedNames[key]) return printedNames[key];
+	}
+	const num = /^(.*)-0*(\d+)$/.exec(id);
+	if (num && printedNames[`${num[1]}-${num[2]}`]) return printedNames[`${num[1]}-${num[2]}`];
+	const energy = /^energy-([a-z]+)$/i.exec(id);
+	if (energy) {
+		const t = energy[1].toLowerCase();
+		return t.charAt(0).toUpperCase() + t.slice(1) + ' Energy';
+	}
+	return '';
+}
+function cardName(players: TcgPlayerView[] | undefined, cardId?: string, iid?: string): string {
+	const fromIid = findMonView(players, iid)?.name;
+	if (fromIid && fromIid !== cardId) return fromIid;
+	if (cardId && players) {
+		for (let s = 0; s < players.length; s++) {
+			const p = players[s];
+			const mons = [p?.active, ...(p?.bench || [])];
+			for (let i = 0; i < mons.length; i++) {
+				const mon = mons[i];
+				if (mon?.cardId === cardId && mon.name && mon.name !== cardId) return mon.name;
+			}
+		}
+	}
+	if (iid && seenMonNames.get(iid) && seenMonNames.get(iid) !== cardId) return seenMonNames.get(iid)!;
+	if (cardId && seenCardNames.get(cardId)) return seenCardNames.get(cardId)!;
+	return printedName(cardId);
 }
 function cardLabel(id?: string): string {
 	return id || 'a card';
@@ -166,18 +262,41 @@ function afterKind(events: TcgEvent[], i: number, kind: string): boolean {
 	}
 	return false;
 }
-function attackHits(events: TcgEvent[], i: number): FxHit[] {
+/** Pocket energy names. "electric" and "steel" are accepted as aliases. */
+function energyElement(raw?: string): string {
+	const t = String(raw || '').toLowerCase();
+	if (t === 'electric' || t === 'lightning') return 'lightning';
+	if (t === 'steel' || t === 'metal') return 'metal';
+	if (t === 'dark' || t === 'darkness') return 'darkness';
+	if (t === 'normal' || t === 'colorless') return 'colorless';
+	if ([
+		'grass', 'fire', 'water', 'psychic', 'fighting', 'fairy', 'dragon',
+	].includes(t)) return t;
+	return '';
+}
+function attackElement(e: TcgEvent, players?: TcgPlayerView[]): string {
+	const fromEvent = energyElement(e.element || e.energyType || e.attackType || e.dmgType);
+	if (fromEvent) return fromEvent;
+	const mon = findMonView(players, e.iid);
+	const fromMon = energyElement(mon?.types?.[0]);
+	if (fromMon) return fromMon;
+	const named = mon?.attacks?.find(a => a.name && e.name && a.name === e.name);
+	const paid = named?.cost?.map(energyElement).find(c => c && c !== 'colorless');
+	return paid || 'colorless';
+}
+function attackHits(events: TcgEvent[], i: number, players?: TcgPlayerView[]): FxHit[] {
 	const start = events[i];
 	if (!start || (start.type !== 'attack' && start.type !== 'ability')) return [];
 	const src = start.type === 'ability' ? 'ability' : 'attack';
 	const label = start.name || (src === 'ability' ? 'Ability' : 'Attack');
+	const element = src === 'attack' ? attackElement(start, players) : '';
 	const hits: FxHit[] = [];
 	for (let j = i + 1; j < events.length; j++) {
 		const n = events[j];
 		if (!n) break;
 		const t = String(n.type || '');
 		if (t === 'request' || t === 'act' || t === 'coin') continue;
-		if (t === 'damage') hits.push({ iid: n.iid, amount: n.amount, kind: 'damage', src, label });
+		if (t === 'damage') hits.push({ iid: n.iid, amount: n.amount, kind: 'damage', src, label, element });
 		else if (t === 'heal') hits.push({ iid: n.iid, amount: n.amount, kind: 'heal' });
 		else if (t === 'status') hits.push({ iid: n.iid, kind: 'status' });
 		else break;
@@ -262,9 +381,9 @@ function fxDuration(e: TcgEvent): number {
 	if (t === 'coin') return 2600;
 	if (t === 'attack' || t === 'ability') return 3000;
 	if (t === 'damage' || t === 'heal') return 2600;
-	if (t === 'ko') return 3200;
+	if (t === 'ko') return 2800;
 	if (t === 'over') return 4200;
-	if (t === 'prize' || t === 'prizeTake') return 3000;
+	if (t === 'prize' || t === 'prizeTake') return 1200;
 	if (t === 'points') return 2400;
 	if (t === 'find') return 2600;
 	if (t === 'draw') return 2400; // effect draws override wait in playFx
@@ -273,15 +392,21 @@ function fxDuration(e: TcgEvent): number {
 	if (t === 'trainer' || t === 'stadium') return 3200;
 	if (t === 'stadiumEnd') return 2400;
 	if (t === 'energy' || t === 'tool') return 2400;
-	if (t === 'place') return 1600;
+	if (t === 'place') return 2200;
 	if (t === 'evolve') return 2800;
 	if (t === 'discard') return 2000;
 	return 2000;
 }
 function placeTalk(e: TcgEvent, players?: TcgPlayerView[]): { tag: string, extra: string, text: string } {
-	const name = findMonView(players, e.iid)?.name || cardLabel(e.cardId);
 	const actor = whoName(players, e.seat);
 	const bench = e.slot !== 'active' && e.slot != null && e.slot !== '';
+	if (e.faceDown) {
+		// Setup: the opponent's Pokémon stay face down until both players are ready.
+		return bench ?
+			{ tag: 'BENCH', extra: 'Face down', text: `${actor} put a Pokémon face down on the Bench.` } :
+			{ tag: 'ACTIVE', extra: 'Face down', text: `${actor} put a Pokémon face down in the Active Spot.` };
+	}
+	const name = cardName(players, e.cardId, e.iid) || cardLabel(e.cardId);
 	// Live battles don't always include prior act; infer from slot.
 	if (bench) return { tag: 'BENCH', extra: name, text: `${actor} benched ${name}.` };
 	return { tag: 'ACTIVE', extra: name, text: `${name} came into the Active Spot.` };
@@ -310,11 +435,24 @@ function dmgSrc(events: TcgEvent[], i: number, players?: TcgPlayerView[]): { key
 
 export type TcgChatEntry = { kind: string, label: string, text: string, turn?: number, seat?: number };
 
+/**
+ * "their deck" / "their discard pile" / "their Prize cards" for a search. The sim only tells the
+ * searching seat which zone it is (snapshot.pendingSearch), so the other side gets a neutral phrase.
+ */
+function searchZoneText(snap: TcgSnapshot | null | undefined, seat: number | undefined, own: boolean): string {
+	const whose = own ? 'your' : 'their';
+	const zone = snap && snap.you != null && seat === snap.you ? snap.pendingSearch?.zone : undefined;
+	if (zone === 'discard') return `${whose} discard pile`;
+	if (zone === 'prizes' || zone === 'prize') return `${whose} Prize cards`;
+	if (zone === 'deck') return `${whose} deck`;
+	return 'for a card';
+}
+
 /** English battle chat from events (graphics.md / Unreal-Bot chatLine). */
-export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[]): TcgChatEntry | null {
+export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?: TcgSnapshot | null): TcgChatEntry | null {
 	const w = (seat: number) => whoName(players, seat);
 	const poke = (iid?: string) => monName(players, iid);
-	const nm = (id?: string) => cardLabel(id);
+	const nm = (id?: string) => cardName(players, id) || cardLabel(id);
 	switch (ev.type) {
 	case 'act':
 		if (ev.action?.type === 'discardPick') {
@@ -327,15 +465,21 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[]): TcgC
 	case 'request':
 		if (ev.kind === 'search') {
 			const seat = (ev.waiting && ev.waiting[0]) ?? 0;
-			return { kind: 'draw', label: 'Search', text: `${w(seat)} is searching their deck.`, seat };
+			return { kind: 'draw', label: 'Search', text: `${w(seat)} is searching ${searchZoneText(snap, seat, false)}.`, seat };
 		}
 		if (ev.kind === 'mulligan') {
 			const seat = (ev.waiting && ev.waiting[0]) ?? 0;
-			return { kind: 'draw', label: 'Mulligan', text: `${w(seat)} took a mulligan.`, seat };
+			const other = seat === 0 ? 1 : 0;
+			return {
+				kind: 'draw', label: 'Mulligan',
+				text: `${w(other)} took a mulligan. ${w(seat)} may bench Basics from their extra cards.`,
+				seat,
+			};
 		}
 		return null;
 	case 'start':
-		return ev.formatId ? { kind: 'setup', label: 'Start', text: `Format: ${ev.formatId}` } : null;
+		// The room header already prints the format's display name; the raw id adds nothing.
+		return null;
 	case 'first':
 		return {
 			kind: 'setup', label: 'First',
@@ -347,7 +491,7 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[]): TcgC
 	case 'deal':
 		return { kind: 'setup', label: 'Deal', text: 'Each player drew 7 cards.' };
 	case 'coin':
-		return { kind: 'coin', label: 'Coin', text: ev.heads ? 'Heads.' : 'Tails.' };
+		return { kind: 'coin', label: 'Coin', text: ev.heads ? 'Coin flip: Heads.' : 'Coin flip: Tails.' };
 	case 'place': {
 		const talk = placeTalk(ev, players);
 		return {
@@ -371,16 +515,14 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[]): TcgC
 		return { kind: 'ability', label: 'Ability', text: `${poke(ev.iid)} used ${ev.name}.` };
 	case 'trainer':
 		return { kind: 'trainer', label: 'Play', text: `${w(ev.seat)} played ${nm(ev.cardId)}.`, seat: ev.seat };
-	case 'energy':
+	case 'energy': case 'tool': {
+		// Attach events carry the Pokémon, not the seat; the owner of the Pokémon did it.
+		const seat = ev.seat ?? findMonSlot(players, ev.iid)?.seat;
 		return {
-			kind: 'energy', label: 'Energy',
-			text: `${w(ev.seat)} attached ${nm(ev.cardId)} to ${poke(ev.iid)}.`, seat: ev.seat,
+			kind: 'energy', label: ev.type === 'tool' ? 'Tool' : 'Energy',
+			text: `${w(seat)} attached ${nm(ev.cardId)} to ${poke(ev.iid)}.`, seat,
 		};
-	case 'tool':
-		return {
-			kind: 'energy', label: 'Tool',
-			text: `${w(ev.seat)} attached ${nm(ev.cardId)} to ${poke(ev.iid)}.`, seat: ev.seat,
-		};
+	}
 	case 'stadium':
 		return { kind: 'trainer', label: 'Stadium', text: `${w(ev.seat)} played ${nm(ev.cardId)}.`, seat: ev.seat };
 	case 'stadiumEnd':
@@ -388,7 +530,7 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[]): TcgC
 	case 'damage':
 		return { kind: 'damage', label: 'Damage', text: `${poke(ev.iid)} took ${ev.amount} damage.` };
 	case 'heal':
-		return { kind: 'heal', label: 'Heal', text: `${poke(ev.iid)} healed ${ev.amount}.` };
+		return { kind: 'heal', label: 'Heal', text: `${poke(ev.iid)} healed ${ev.amount} damage.` };
 	case 'status':
 		return {
 			kind: 'status', label: 'Status',
@@ -400,9 +542,12 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[]): TcgC
 		return { kind: 'ko', label: 'KO', text: `${poke(ev.iid)} was Knocked Out.`, seat: ev.seat };
 	case 'draw': {
 		const n = ev.n || 1;
+		const ids = Array.isArray(ev.ids) ? ev.ids.filter(Boolean) : [];
+		const named = ids.length && ids.length === n ? ids.map(nm).join(', ') : '';
 		return {
 			kind: 'draw', label: 'Draw',
-			text: n === 1 ? `${w(ev.seat)} drew a card.` : `${w(ev.seat)} drew ${n} cards.`,
+			text: named ? `${w(ev.seat)} drew ${named}.` :
+			n === 1 ? `${w(ev.seat)} drew a card.` : `${w(ev.seat)} drew ${n} cards.`,
 			seat: ev.seat,
 		};
 	}
@@ -412,7 +557,9 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[]): TcgC
 			`${w(ev.seat)} put ${nm(ids[0])} into their hand.` :
 			ids.length > 1 ?
 				`${w(ev.seat)} put ${ids.map(nm).join(', ')} into their hand.` :
-				`${w(ev.seat)} put ${(ev.ids && ev.ids.length) || 1} card(s) into their hand.`;
+				((ev.ids && ev.ids.length) || ev.n || 1) === 1 ?
+					`${w(ev.seat)} put a card into their hand.` :
+					`${w(ev.seat)} put ${(ev.ids && ev.ids.length) || ev.n} cards into their hand.`;
 		return { kind: 'draw', label: 'Search', text, seat: ev.seat };
 	}
 	case 'prize':
@@ -421,7 +568,15 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[]): TcgC
 			text: `${w(ev.seat)} takes ${ev.n} Prize card${ev.n === 1 ? '' : 's'}.`, seat: ev.seat,
 		};
 	case 'prizeTake':
-		return { kind: 'prize', label: 'Prize', text: `${w(ev.seat)} took a Prize card.`, seat: ev.seat };
+	{
+		const ids = Array.isArray(ev.ids) ? ev.ids.filter(Boolean) : [];
+		return {
+			kind: 'prize', label: 'Prize',
+			text: ids.length ? `${w(ev.seat)} took a Prize card: ${ids.map(nm).join(', ')}.` :
+			`${w(ev.seat)} took a Prize card.`,
+			seat: ev.seat,
+		};
+	}
 	case 'points':
 		return {
 			kind: 'prize', label: 'Points',
@@ -464,24 +619,30 @@ function fxFor(
 	i: number,
 	players?: TcgPlayerView[],
 	you?: number | null,
+	snap?: TcgSnapshot | null,
 ): FxBeat {
 	if (!e) return { kind: '' };
 	const who = (seat?: number) => actorLabel(players, seat, you);
 	const yours = (seat?: number) => actorIsYou(seat, you);
 	if (e.type === 'request' && e.kind === 'search') {
 		const seat = (e.waiting && e.waiting[0] != null) ? e.waiting[0] : 0;
+		const zone = searchZoneText(snap, seat, yours(seat));
 		return {
 			kind: 'search', seat, n: 5,
-			extra: 'Searching their deck',
-			message: yours(seat) ? 'You are searching your deck' : `${who(seat)} is searching their deck`,
+			extra: `Searching ${zone}`,
+			message: yours(seat) ? `You are searching ${zone}` : `${who(seat)} is searching ${zone}`,
 		};
 	}
 	if (e.type === 'request' && e.kind === 'mulligan') {
+		// The waiting seat is the one who gets to bench extra Basics; the *other* seat mulliganed.
 		const seat = (e.waiting && e.waiting[0] != null) ? e.waiting[0] : 0;
+		const other = seat === 0 ? 1 : 0;
 		return {
 			kind: 'mulligan', seat, n: 7,
-			extra: 'Took a mulligan',
-			message: yours(seat) ? 'You took a mulligan' : `${who(seat)} took a mulligan`,
+			extra: `${who(other)} took a mulligan`,
+			message: yours(seat) ?
+				`${who(other)} took a mulligan — you may bench Basics from your extra cards` :
+				`${who(other)} took a mulligan — ${who(seat)} may bench extra Basics`,
 		};
 	}
 	if (e.type === 'act' && e.action?.type === 'searchDone') {
@@ -513,8 +674,10 @@ function fxFor(
 	}
 	if (e.type === 'place') {
 		const talk = placeTalk(e, players);
+		const slot = placeSlotOf(e);
 		return {
-			kind: 'place', iid: e.iid || '', seat: e.seat, extra: talk.extra, tag: talk.tag,
+			kind: 'place', iid: e.iid || '', seat: e.seat, slot,
+			extra: talk.extra, tag: talk.tag,
 			cardId: e.cardId || '',
 			message: talk.text,
 		};
@@ -655,7 +818,7 @@ function fxFor(
 		return {
 			kind: 'heal', iid: e.iid || '', seat: e.seat, amount: e.amount,
 			extra: e.amount ? `+${e.amount}` : 'Healed',
-			message: `${monName(players, e.iid)} healed ${e.amount || 0}`,
+			message: `${monName(players, e.iid)} healed ${e.amount || 0} damage`,
 		};
 	}
 	if (e.type === 'attack') {
@@ -725,15 +888,17 @@ function fxFor(
 			e.type === 'stadiumEnd' ? `${cardLabel(e.cardId)} is no longer in play` :
 			undefined,
 		cardId: e.cardId || '',
+		coins: e.type === 'coin' ? [!!e.heads] : undefined,
 	};
 }
 
-function pkClass(kind: string): string {
+function pkClass(fx: FxBeat): string {
+	const kind = fx.kind;
 	if (kind === 'damage') return 'fx-hit';
 	if (kind === 'attack') return 'fx-lunge';
 	if (kind === 'heal') return 'fx-heal';
 	if (kind === 'ko') return 'fx-ko';
-	if (kind === 'place') return 'fx-place';
+	if (kind === 'place') return fx.fromBench ? 'fx-switch' : 'fx-place';
 	if (kind === 'evolve') return 'fx-evolve';
 	if (kind === 'energy' || kind === 'tool') return 'fx-energy';
 	if (kind === 'status') return 'fx-status';
@@ -743,9 +908,9 @@ function pkClass(kind: string): string {
 
 function buildPkFx(fx: FxBeat, tick = 0): { [iid: string]: PkFx } {
 	const out: { [iid: string]: PkFx } = {};
-	const put = (iid: string | undefined, cls: string, dataFx?: string) => {
+	const put = (iid: string | undefined, cls: string, dataFx?: string, element?: string) => {
 		if (!iid) return;
-		out[iid] = { cls, dataFx, tick };
+		out[iid] = { cls, dataFx, tick, element };
 	};
 	if (fx.iid) {
 		let dataFx = '';
@@ -754,7 +919,7 @@ function buildPkFx(fx: FxBeat, tick = 0): { [iid: string]: PkFx } {
 		if (fx.kind === 'energy') dataFx = '⚡';
 		if (fx.kind === 'evolve') dataFx = '✨';
 		if (fx.kind === 'ko') dataFx = 'KO';
-		put(fx.iid, `${pkClass(fx.kind)}${fx.src ? ` src-${fx.src}` : ''}`, dataFx || undefined);
+		put(fx.iid, `${pkClass(fx)}${fx.src ? ` src-${fx.src}` : ''}`, dataFx || undefined);
 	}
 	if (fx.targetIid && fx.targetIid !== fx.iid) put(fx.targetIid, 'fx-hit');
 	for (const h of fx.hits || []) {
@@ -763,9 +928,18 @@ function buildPkFx(fx: FxBeat, tick = 0): { [iid: string]: PkFx } {
 			h.kind === 'heal' && h.amount ? `+${h.amount}` : undefined;
 		const src = h.src || fx.src;
 		const cls = `${h.kind === 'heal' ? 'fx-heal' : h.kind === 'status' ? 'fx-status' : 'fx-hit'}${src ? ` src-${src}` : ''}`;
-		put(h.iid, cls, dataFx);
+		put(h.iid, cls, dataFx, h.kind === 'damage' ? (h.element || fx.element) : undefined);
 	}
 	return out;
+}
+
+function TypeHit(props: { type: string, tick?: number }) {
+	// data-tick changes per hit so the CSS animation restarts via TcgMon's reflow.
+	return <div class={`type-hit t-${props.type}`} data-tick={props.tick ?? 0} aria-hidden="true">
+		<i class="core"></i>
+		<i class="p p1"></i><i class="p p2"></i><i class="p p3"></i>
+		<i class="p p4"></i><i class="p p5"></i><i class="p p6"></i>
+	</div>;
 }
 
 function FxCaption(props: { tag: string, title?: string }) {
@@ -800,7 +974,7 @@ function MiniArt(props: { cardId?: string, name?: string }) {
 	return <img src={src} alt={props.name || ''} draggable={false} />;
 }
 
-class FxOverlay extends preact.Component<{ fx: FxBeat | null, you?: number | null }> {
+class FxOverlay extends preact.Component<{ fx: FxBeat | null, you?: number | null, names?: string[] }> {
 	override render() {
 		const fx = this.props.fx;
 		if (!fx?.kind) return null;
@@ -820,10 +994,46 @@ class FxOverlay extends preact.Component<{ fx: FxBeat | null, you?: number | nul
 		);
 
 		if (k === 'coin') {
-			const side = fx.extra === 'Heads' ? 'HEADS' : 'TAILS';
+			const coins = (fx.coins && fx.coins.length) ? fx.coins :
+				[fx.extra === 'Heads' || fx.extra === 'HEADS'];
+			const shown = coins.slice(0, 8);
+			const headsN = shown.filter(Boolean).length;
+			const tailsN = shown.length - headsN;
+			const forFirst = fx.extra === 'First';
+			const side = forFirst ? (shown[0] ? 'HEADS' : 'TAILS') :
+				shown.length === 1 ?
+					(shown[0] ? 'HEADS' : 'TAILS') :
+					`${headsN}H · ${tailsN}T`;
+			const result = fx.message || (shown.length === 1 ?
+				(shown[0] ? 'Heads!' : 'Tails!') :
+				`${headsN} Heads · ${tailsN} Tails`);
+			const lifeMs = (forFirst ? 2600 : 2100) + Math.max(0, shown.length - 1) * 200;
 			return wrap('coin', <>
-				{cap('COIN', side)}
-				<div class={`fx-coin ${fx.extra === 'Heads' ? 'heads' : 'tails'}`}><b>{side}</b></div>
+				{cap(forFirst ? 'FIRST' : 'COIN', side)}
+				<div
+					class={`fx-coin-row n-${shown.length}`}
+					style={{ animationDuration: `${lifeMs}ms` }}
+				>
+					{shown.map((heads, idx) => (
+						<div
+							class="fx-coin-scene"
+							key={`coin-${idx}-${heads ? 'h' : 't'}`}
+							style={{ '--coin-delay': `${idx * 0.16}s` } as any}
+						>
+							<div class={`fx-coin-3d ${heads ? 'land-heads' : 'land-tails'}`}>
+								<div class="fx-coin-face front">
+									<span>H</span>
+									<em>HEADS</em>
+								</div>
+								<div class="fx-coin-face back">
+									<span>T</span>
+									<em>TAILS</em>
+								</div>
+							</div>
+						</div>
+					))}
+				</div>
+				<div class="fx-coin-result" style={{ animationDuration: `${lifeMs}ms` }}>{result}</div>
 			</>);
 		}
 		if (k === 'drawEffect') {
@@ -942,10 +1152,7 @@ class FxOverlay extends preact.Component<{ fx: FxBeat | null, you?: number | nul
 			</>);
 		}
 		if (k === 'place') {
-			const face = art || <span class="fx-mini-card face"></span>;
-			return wrap('place', <>
-				<div class={`fx-place-fly ${seat}`} data-target={fx.iid || ''}>{face}</div>
-			</>);
+			return wrap('place', cap(fx.tag || (fx.fromBench ? 'SWITCH' : 'INTO PLAY'), fx.extra));
 		}
 		if (k === 'evolve') {
 			const fromArt = fx.fromCardId ? <MiniArt cardId={fx.fromCardId} /> : null;
@@ -987,31 +1194,20 @@ class FxOverlay extends preact.Component<{ fx: FxBeat | null, you?: number | nul
 		if (k === 'turn') {
 			const isYours = fx.seat != null && this.props.you != null && fx.seat === this.props.you;
 			const turnNo = String(fx.extra || '').match(/Turn\s+(\d+)/i)?.[1];
+			const seatName = fx.seat != null ? this.props.names?.[fx.seat] || '' : '';
+			const whose = isYours ? 'Your Turn' :
+				this.props.you != null || !seatName ? "Opponent's Turn" : `${seatName}'s Turn`;
 			return wrap('turn', <>
 				<div class={`fx-turn-banner${isYours ? ' yours' : ' foe'}`}>
-					<em>{isYours ? 'Your Turn' : "Opponent's Turn"}</em>
+					<em>{whose}</em>
 					{turnNo ? <strong>Turn {turnNo}</strong> : null}
 				</div>
 			</>);
 		}
 		if (k === 'first') return wrap('first', cap('FIRST', fx.extra));
 		if (k === 'over') {
-			const raw = String(fx.extra || '');
-			const nameMatch = raw.match(/^(.+?)\s+wins?\.?$/i);
-			if (fx.tie || /^draw$/i.test(raw)) {
-				return wrap('over', <div class="fx-turn-banner fx-win-banner tie">
-					<em>Draw</em>
-				</div>);
-			}
-			if (nameMatch) {
-				return wrap('over', <div class="fx-turn-banner fx-win-banner win">
-					<em>{nameMatch[1]}</em>
-					<strong>won</strong>
-				</div>);
-			}
-			return wrap('over', <div class="fx-turn-banner fx-win-banner">
-				<em>{raw || 'Game Over'}</em>
-			</div>);
+			// The board banner is the one win message. Drawing it here too flashed "won" twice.
+			return null;
 		}
 		if (k === 'points') return wrap('points', <div class="fx-points-burst">+{fx.n || 1}</div>);
 		if (k === 'status') return wrap('status', cap('STATUS', fx.extra ? String(fx.extra) : 'Recovered'));
@@ -1295,8 +1491,8 @@ function promptHeading(snap: TcgSnapshot, kind: string): { title: string, sub?: 
 		const dest = ps?.dest === 'bench' ? ' to the Bench' :
 			ps?.dest === 'active' ? ' to Active' :
 			ps?.dest === 'hand' ? ' to your hand' : '';
-		const zone = ps?.zone === 'discard' ? 'from your discard' :
-			ps?.zone === 'prize' ? 'from Prizes' : 'from your deck';
+		const zone = ps?.zone === 'discard' ? 'from your discard pile' :
+			ps?.zone === 'prizes' || ps?.zone === 'prize' ? 'from your Prize cards' : 'from your deck';
 		return { title: `Choose a card${dest}`, sub: `${zone}${left}` };
 	}
 	if (kind === 'pay') return { title: 'Discard Energy to retreat', sub: snap.pendingRetreatPay?.need != null ? `Choose ${snap.pendingRetreatPay.need}` : undefined };
@@ -1363,13 +1559,55 @@ class TcgCardFace extends preact.Component<{
 	onClick?: () => void,
 	onInspect?: (p: Preview) => void,
 	onPointerDown?: (e: PointerEvent) => void,
+	/** Long-press opened the preview; cancel a play that pointer-up would send. */
+	onHold?: () => void,
 }> {
-	inspect = (ev: MouseEvent) => {
+	holdTimer: number | null = null;
+	held = false;
+	holdX = 0;
+	holdY = 0;
+	clearHold() {
+		if (this.holdTimer != null) window.clearTimeout(this.holdTimer);
+		this.holdTimer = null;
+	}
+	inspect = (ev?: Event) => {
 		const { cardId, image, name, back, onInspect } = this.props;
 		if (back || !cardId || !onInspect) return;
-		ev.preventDefault();
-		ev.stopPropagation();
+		ev?.preventDefault();
+		ev?.stopPropagation();
 		onInspect({ cardId, image, name });
+	};
+	onPointerDown = (ev: PointerEvent) => {
+		if (ev.button != null && ev.button !== 0) return;
+		ev.stopPropagation();
+		this.held = false;
+		this.holdX = ev.clientX;
+		this.holdY = ev.clientY;
+		this.props.onPointerDown?.(ev);
+		if (!this.props.onInspect || this.props.back || !this.props.cardId) return;
+		this.clearHold();
+		this.holdTimer = window.setTimeout(() => {
+			this.holdTimer = null;
+			this.held = true;
+			this.props.onHold?.();
+			this.inspect();
+		}, 420);
+	};
+	onPointerUp = () => {
+		this.clearHold();
+	};
+	onPointerMove = (ev: PointerEvent) => {
+		if (this.holdTimer == null) return;
+		if (Math.hypot(ev.clientX - this.holdX, ev.clientY - this.holdY) > 8) this.clearHold();
+	};
+	onClick = (ev: MouseEvent) => {
+		ev.stopPropagation();
+		if (this.held) {
+			this.held = false;
+			ev.preventDefault();
+			return;
+		}
+		this.props.onClick?.();
 	};
 	onImgError = (ev: Event) => {
 		const img = ev.currentTarget as HTMLImageElement | null;
@@ -1413,14 +1651,14 @@ class TcgCardFace extends preact.Component<{
 	override render() {
 		const {
 			cardId, image, name, size, selected, back, playable, fanIndex, fanCount, dragging,
-			pocket, onClick, onPointerDown, onInspect,
+			pocket, onInspect,
 		} = this.props;
 		const src = image || (cardId ? cardArt(cardId, pocket ? { pocket: true } : undefined) : '');
 		const cls = [
 			'tcg-card', `tcg-card-${size || 'md'}`,
 			selected ? 'tcg-card-selected' : '',
 			back ? 'tcg-card-back' : '',
-			onClick || onPointerDown ? 'tcg-card-click' : '',
+			this.props.onClick || this.props.onPointerDown || onInspect ? 'tcg-card-click' : '',
 			playable ? 'tcg-card-playable' : '',
 			dragging ? 'tcg-card-dragging' : '',
 			fanCount ? 'tcg-card-fan' : '',
@@ -1432,9 +1670,12 @@ class TcgCardFace extends preact.Component<{
 		} as any : undefined;
 		return <button
 			type="button" class={cls} style={style}
-			onClick={onClick ? ev => { ev.stopPropagation(); onClick(); } : undefined}
-			onPointerDown={onPointerDown ? ev => { ev.stopPropagation(); onPointerDown(ev as any); } : undefined}
-			onContextMenu={onInspect ? this.inspect : undefined}
+			onClick={onInspect || this.props.onClick ? this.onClick : undefined}
+			onPointerDown={onInspect || this.props.onPointerDown ? this.onPointerDown : undefined}
+			onPointerUp={this.onPointerUp}
+			onPointerCancel={this.onPointerUp}
+			onPointerMove={this.onPointerMove}
+			onContextMenu={onInspect ? this.inspect : ev => ev.preventDefault()}
 			title={name || cardId || ''} aria-pressed={selected}
 		>
 			<span class="tcg-card-inner">
@@ -1450,11 +1691,85 @@ class TcgMon extends preact.Component<{
 	mon: TcgPokemonView | null, slot: TcgSlot, size?: CardSize, selected?: boolean,
 	activeSpot?: boolean, legal?: boolean, foe?: boolean, pkFx?: PkFx | null,
 	dropOk?: boolean, dropHot?: boolean, dropLabel?: string,
+	/** Just flipped face up (end of setup). */
+	reveal?: boolean,
 	onClick?: () => void, onInspect?: (p: Preview) => void,
 }> {
 	baseEl: HTMLElement | null = null;
+	holdTimer: number | null = null;
+	held = false;
+	clearHold() {
+		if (this.holdTimer != null) window.clearTimeout(this.holdTimer);
+		this.holdTimer = null;
+	}
+	onPointerDown = (ev: PointerEvent) => {
+		const mon = this.props.mon;
+		if (!mon || !this.props.onInspect) return;
+		if (ev.button != null && ev.button !== 0) return;
+		this.held = false;
+		this.clearHold();
+		this.holdTimer = window.setTimeout(() => {
+			this.holdTimer = null;
+			this.held = true;
+			this.props.onInspect?.({ cardId: mon.cardId, image: mon.image, name: mon.name });
+		}, 420);
+	};
+	onPointerUp = () => {
+		this.clearHold();
+	};
+	onClick = (ev: MouseEvent) => {
+		if (this.held) {
+			this.held = false;
+			ev.preventDefault();
+			ev.stopPropagation();
+			return;
+		}
+		this.props.onClick?.();
+	};
 
+	hpEl: HTMLElement | null = null;
+	hpRaf: number | null = null;
+	/** Tick the HP number from the old value to the new one instead of snapping (TCG Live style). */
+	tweenHp(from: number, to: number) {
+		const el = this.hpEl;
+		if (!el || from === to || PS.prefs.noanim) return;
+		if (this.hpRaf != null) cancelAnimationFrame(this.hpRaf);
+		const start = performance.now();
+		const dur = 650;
+		el.classList.add(to < from ? 'hp-dropping' : 'hp-rising');
+		el.textContent = String(from); // preact already wrote `to`; start from the old value
+		const tick = (now: number) => {
+			const t = Math.min(1, (now - start) / dur);
+			const e = 1 - (1 - t) ** 3;
+			el.textContent = String(Math.round(from + (to - from) * e));
+			if (t < 1) {
+				this.hpRaf = requestAnimationFrame(tick);
+			} else {
+				this.hpRaf = null;
+				el.textContent = String(to);
+				el.classList.remove('hp-dropping', 'hp-rising');
+			}
+		};
+		this.hpRaf = requestAnimationFrame(tick);
+	}
+	override componentWillUnmount() {
+		if (this.hpRaf != null) cancelAnimationFrame(this.hpRaf);
+		this.clearHold();
+	}
 	override componentDidUpdate(prev: this['props']) {
+		if (prev.mon?.iid !== this.props.mon?.iid && this.hpRaf != null) {
+			// A different Pokémon now sits here: do not finish the old one's tick on its number.
+			cancelAnimationFrame(this.hpRaf);
+			this.hpRaf = null;
+			this.hpEl?.classList.remove('hp-dropping', 'hp-rising');
+		}
+		if (prev.mon && this.props.mon && prev.mon.iid === this.props.mon.iid && prev.mon.hp !== this.props.mon.hp) {
+			this.tweenHp(prev.mon.hp, this.props.mon.hp);
+		} else if (this.props.mon && this.hpEl && this.hpRaf == null && this.hpEl.textContent !== String(this.props.mon.hp)) {
+			// The tween writes the text node directly; preact skips a rewrite when the
+			// vnode text did not change, so make sure the final number is the real one.
+			this.hpEl.textContent = String(this.props.mon.hp);
+		}
 		const cur = this.props.pkFx;
 		const was = prev.pkFx;
 		if (!cur?.cls || !this.baseEl) return;
@@ -1491,31 +1806,52 @@ class TcgMon extends preact.Component<{
 		}
 		const pct = mon.maxHp ? Math.max(0, Math.min(100, (mon.hp / mon.maxHp) * 100)) : 0;
 		const hpTone = pct > 50 ? 'ok' : pct > 25 ? 'mid' : 'low';
+		if (mon.faceDown) {
+			return <div
+				ref={el => { this.baseEl = el as HTMLElement | null; }}
+				class={`tcg-mon face-down ${activeSpot ? 'active' : ''} ${foe ? 'foe' : ''} ${pkFx?.cls || ''}`}
+				data-iid={mon.iid}
+				data-drop-slot={String(this.props.slot)}
+				data-drop-foe={foe ? '1' : '0'}
+				data-drop-empty="0"
+				title="Face-down Pokémon"
+				onContextMenu={ev => ev.preventDefault()}
+			>
+				<TcgCardFace cardId="" name="Face-down Pokémon" size={cardSize} back />
+			</div>;
+		}
 		const cls = [
 			'tcg-mon', activeSpot ? 'active' : '', foe ? 'foe' : '',
 			selected ? 'selected' : '', legal ? 'legal' : '',
 			dropOk ? 'drop-ok' : '', dropHot ? 'drop-hot' : '',
 			pkFx?.cls || '',
+			this.props.reveal ? 'fx-reveal' : '',
 		].filter(Boolean).join(' ');
 		return <div
 			ref={el => { this.baseEl = el as HTMLElement | null; }}
-			class={cls} onClick={onClick} data-iid={mon.iid}
+			class={cls}
+			onClick={this.onClick}
+			onPointerDown={this.onPointerDown}
+			onPointerUp={this.onPointerUp}
+			onPointerCancel={this.onPointerUp}
+			onContextMenu={ev => {
+				ev.preventDefault();
+				if (mon) this.props.onInspect?.({ cardId: mon.cardId, image: mon.image, name: mon.name });
+			}}
+			data-iid={mon.iid}
 			data-fx={pkFx?.dataFx || undefined}
 			data-fx-tick={pkFx?.tick != null ? String(pkFx.tick) : undefined}
+			data-el={pkFx?.element || undefined}
 			data-drop-slot={String(this.props.slot)}
 			data-drop-foe={foe ? '1' : '0'}
 			data-drop-empty="0"
-			onContextMenu={onInspect && mon ? (ev: any) => {
-				ev.preventDefault();
-				onInspect({ cardId: mon.cardId, image: mon.image, name: mon.name });
-			} : undefined}
 		>
 			<TcgCardFace
 				cardId={mon.cardId} image={mon.image} name={mon.name} size={cardSize}
 				onClick={onClick} onInspect={onInspect}
 			/>
 			<div class={`tcg-hp ${hpTone}`} title={`${mon.hp} / ${mon.maxHp || mon.hp} HP`}>
-				<span class="tcg-hp-val">{mon.hp}</span>
+				<span class="tcg-hp-val" ref={el => { this.hpEl = el as HTMLElement | null; }}>{mon.hp}</span>
 				<span class="tcg-hp-track" aria-hidden="true">
 					<span class="tcg-hp-fill" style={{ width: `${pct}%` }}></span>
 				</span>
@@ -1525,6 +1861,7 @@ class TcgMon extends preact.Component<{
 			</div>
 			{(mon.status || mon.poisoned || mon.burned) &&
 				<div class="tcg-status">{mon.status}{mon.poisoned ? ' PSN' : ''}{mon.burned ? ' BRN' : ''}</div>}
+			{pkFx?.element && <TypeHit type={pkFx.element} tick={pkFx.tick} />}
 			{dropHot && dropLabel && <em class="tcg-drop-tag">{dropLabel}</em>}
 		</div>;
 	}
@@ -1582,11 +1919,24 @@ export class TcgBoard extends preact.Component<{
 	snapshot: TcgSnapshot,
 	events: TcgEvent[],
 	fxKey: number,
+	/** Bumps when playback is cancelled (skip / replay) so the current beat stops. */
+	halt?: number,
+	/** Board after this beat. Display keeps `snapshot` until the beat finishes. */
+	fxSnapshot?: TcgSnapshot | null,
 	waiting: boolean,
 	ended?: boolean,
 	/** Winner display name; `null`/empty with ended = tie or unknown. */
 	winnerName?: string | null,
 	onAct: (action: TcgAction) => void,
+	/** Fired when a beat starts, including events that share that beat. */
+	onEvent?: (ev: TcgEvent) => void,
+	onFxDone?: () => boolean,
+	paused?: boolean,
+	onTogglePause?: () => void,
+	onReplay?: () => void,
+	onSkip?: () => void,
+	/** When false, post-game Play/Replay/Skip chrome is omitted (parent control strip owns it). */
+	showReplayControls?: boolean,
 }> {
 	override state = {
 		selectedHand: null as number | null,
@@ -1596,18 +1946,50 @@ export class TcgBoard extends preact.Component<{
 		pkFx: {} as { [iid: string]: PkFx },
 		/** Kept in the vacated slot while KO FX plays (snapshot already removed the mon). */
 		koGhost: null as KoGhost | null,
+		/** iids that have already fainted this payload — stay hidden after the KO beat. */
+		koHide: {} as { [iid: string]: true },
+		/** Incoming Pokémon shown in its destination slot during a place / switch-in beat. */
+		placeIn: null as { seat: number, slot: TcgSlot, mon: TcgPokemonView } | null,
+		/**
+		 * Effects of beats that have already played in this batch, applied on top of the
+		 * pre-batch snapshot so the board reacts at the beat instead of at commit:
+		 * cards leave your hand as they are played, HP drops with each hit, energy lands.
+		 */
+		live: { hand: {}, hp: {}, energy: {} } as {
+			hand: { [cardId: string]: number },
+			hp: { [iid: string]: number },
+			energy: { [iid: string]: string[] },
+		},
+		/** fxKey the live overlay was built for; an overlay from an earlier batch is ignored. */
+		liveKey: -1,
 		inspect: null as Preview | null,
 		menuSlot: null as TcgSlot | null,
 		endTurnConfirm: false,
+		/**
+		 * takePrize clicks already sent while the board still shows the pre-pick snapshot.
+		 * Used so the prize prompt closes as soon as enough picks are in, not after FX.
+		 */
+		prizeTakenLocal: 0,
 		drag: null as DragState | null,
 	};
 	timer: number | null = null;
 	tableEl: HTMLElement | null = null;
 	dragMoved = false;
+	/** Set when a long-press opened the preview, so pointer-up does not play the card. */
+	holdConsumed = false;
 	/** Last-seen board mons by iid — survives snapshot removal so KO can animate. */
 	monMemory: { [iid: string]: KoGhost } = {};
+	/** Mons removed on the latest snapshot, held until their KO (or the next unrelated beat). */
+	freshOut: { [iid: string]: true } = {};
+	lastSnap: TcgSnapshot | null = null;
+	/** Opponent setup placeholders seen face down, and the ones flipping up on this snapshot. */
+	faceDownSeen: { [iid: string]: true } = {};
+	revealing: { [iid: string]: true } = {};
 	/** Pre-draw hand per seat — snapshot already has the new hand when shuffle FX runs. */
 	handMemory: { [seat: number]: { ids: string[] | null, count: number } } = {};
+	/** Events that arrived while a beat was still playing. */
+	fxPending: TcgEvent[] = [];
+	fxBusy = false;
 
 	stashHands(snap: TcgSnapshot | null | undefined) {
 		if (!snap?.players) return;
@@ -1620,7 +2002,7 @@ export class TcgBoard extends preact.Component<{
 	/** Cards that appeared in hand since the last stash (for draw FX when event.ids missing). */
 	inferDrawnIds(seat: number, n: number): string[] | null {
 		const prev = this.handMemory[seat]?.ids;
-		const curr = handIds(this.props.snapshot.players[seat]?.hand);
+		const curr = handIds((this.props.fxSnapshot || this.props.snapshot).players[seat]?.hand);
 		if (!curr?.length) return null;
 		if (!prev?.length) return curr.slice(Math.max(0, curr.length - n));
 		const left = curr.slice();
@@ -1640,9 +2022,79 @@ export class TcgBoard extends preact.Component<{
 		window.addEventListener('pointercancel', this.onDragEnd);
 		window.addEventListener('keydown', this.onKeyDown);
 	}
+	/** Where every on-board Pokémon was before this render (FLIP "first"). */
+	flipRects: { [iid: string]: { left: number, top: number, width: number, height: number } } = {};
+	/** Layout box relative to the table, ignoring any transform mid-animation (lunge, shake, hover). */
+	layoutBox(el: HTMLElement) {
+		let left = 0;
+		let top = 0;
+		let node: HTMLElement | null = el;
+		while (node && node !== this.tableEl) {
+			left += node.offsetLeft;
+			top += node.offsetTop;
+			node = node.offsetParent as HTMLElement | null;
+		}
+		return { left, top, width: el.offsetWidth, height: el.offsetHeight };
+	}
+	override componentWillUpdate() {
+		this.flipRects = {};
+		const root = this.tableEl;
+		if (!root || PS.prefs.noanim) return;
+		root.querySelectorAll<HTMLElement>('.tcg-mon[data-iid]').forEach(el => {
+			const iid = el.dataset.iid;
+			if (iid) this.flipRects[iid] = this.layoutBox(el);
+		});
+	}
+	/** Glide any Pokémon whose slot changed from its old box to the new one (FLIP "last/invert/play"). */
+	flipMoved() {
+		const root = this.tableEl;
+		const first = this.flipRects;
+		this.flipRects = {};
+		if (!root || typeof (root as any).animate !== 'function') return;
+		root.querySelectorAll<HTMLElement>('.tcg-mon[data-iid]').forEach(el => {
+			const iid = el.dataset.iid;
+			const was = iid && first[iid];
+			if (!was) return;
+			// Beats with their own entrance/exit motion keep it.
+			// (A switch-in keeps its glow but glides from its real bench spot instead of the canned offset.)
+			if (/\bfx-(place|ko|reveal|lunge|hit)\b/.test(el.className)) return;
+			const now = this.layoutBox(el);
+			const dx = was.left - now.left;
+			const dy = was.top - now.top;
+			if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
+			const sx = was.width && now.width ? was.width / now.width : 1;
+			const sy = was.height && now.height ? was.height / now.height : 1;
+			el.classList.add('is-flipping');
+			const anim = el.animate([
+				{ transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`, filter: 'drop-shadow(0 10px 10px rgba(0,0,0,0.35))' },
+				{ transform: `translate(${dx * 0.4}px, ${dy * 0.4}px) scale(${1 + (sx - 1) * 0.4}, ${1 + (sy - 1) * 0.4})`, filter: 'drop-shadow(0 14px 14px rgba(0,0,0,0.4))', offset: 0.5 },
+				{ transform: 'translate(0, 0) scale(1, 1)', filter: 'drop-shadow(0 0 0 rgba(0,0,0,0))' },
+			], { duration: 520, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'none' });
+			const done = () => el.classList.remove('is-flipping');
+			anim.onfinish = done;
+			anim.oncancel = done;
+		});
+	}
 	override componentDidUpdate(prev: this['props'], prevState: this['state']) {
+		this.flipMoved();
+		if (this.props.halt !== prev.halt) {
+			this.fxPending = [];
+			this.fxBusy = false;
+			if (this.timer != null) window.clearTimeout(this.timer);
+			this.timer = null;
+			this.clearFx();
+		}
+		// Server caught up to our prize picks — drop the optimistic counter.
+		const prevPrize = prev.snapshot?.pendingPrize;
+		const nextPrize = this.props.snapshot?.pendingPrize;
+		if (
+			this.state.prizeTakenLocal &&
+			(prevPrize?.n !== nextPrize?.n || prevPrize?.seat !== nextPrize?.seat || !nextPrize)
+		) {
+			this.setState({ prizeTakenLocal: 0 });
+		}
 		if (this.props.fxKey !== prev.fxKey) {
-			this.stashHands(prev.snapshot);
+			this.stashHands(prev.fxSnapshot || prev.snapshot);
 			this.playFx(this.props.events);
 		} else if (this.state.fx !== prevState.fx) {
 			requestAnimationFrame(() => this.aimFlyers());
@@ -1654,6 +2106,8 @@ export class TcgBoard extends preact.Component<{
 		}
 	}
 	override componentWillUnmount() {
+		this.fxPending = [];
+		this.fxBusy = false;
 		if (this.timer != null) window.clearTimeout(this.timer);
 		window.removeEventListener('pointermove', this.onDragMove);
 		window.removeEventListener('pointerup', this.onDragEnd);
@@ -1666,7 +2120,83 @@ export class TcgBoard extends preact.Component<{
 	};
 
 	clearFx() {
-		this.setState({ fx: null, pkFx: {}, koGhost: null });
+		if (this.state.fx?.kind === 'ko' && this.state.fx.iid) delete this.freshOut[this.state.fx.iid];
+		this.liveNow = { hand: {}, hp: {}, energy: {} };
+		this.setState({ fx: null, pkFx: {}, koGhost: null, koHide: {}, placeIn: null, live: this.liveNow });
+	}
+
+	/**
+	 * Synchronous copy of state.live. Each batch starts from an empty overlay: its
+	 * snapshot already includes everything earlier batches animated, so carrying the
+	 * old overlay over would subtract that damage (or remove that hand card) twice.
+	 */
+	liveNow: TcgBoard['state']['live'] = { hand: {}, hp: {}, energy: {} };
+	static readonly NO_LIVE: TcgBoard['state']['live'] = { hand: {}, hp: {}, energy: {} };
+	/** The overlay to render with: only while a beat of the current batch is on screen. */
+	liveOverlay() {
+		if (!this.state.fx || this.state.liveKey !== this.props.fxKey) return TcgBoard.NO_LIVE;
+		return this.state.live;
+	}
+	/** Fold a beat that is now playing into the live overlay (see state.live). */
+	applyLive(fx: FxBeat, you: number | null | undefined) {
+		const live = {
+			hand: { ...this.liveNow.hand },
+			hp: { ...this.liveNow.hp },
+			energy: { ...this.liveNow.energy },
+		};
+		const oldPlayers = this.props.snapshot.players;
+		const finalPlayers = this.props.fxSnapshot?.players || oldPlayers;
+		const fromHand = fx.kind === 'energy' || fx.kind === 'tool' || fx.kind === 'trainer' ||
+			fx.kind === 'stadium' || fx.kind === 'evolve' || (fx.kind === 'place' && !fx.fromBench);
+		// Attach events carry the target Pokémon, not always the seat; the owner of the target played it.
+		const seat = fx.seat ?? (fx.iid ? findMonSlot(oldPlayers, fx.iid)?.seat : undefined);
+		if (fromHand && fx.cardId && actorIsYou(seat, you)) {
+			live.hand[fx.cardId] = (live.hand[fx.cardId] || 0) + 1;
+		}
+		const hits = fx.hits?.length ? fx.hits : (fx.kind === 'damage' || fx.kind === 'heal') && fx.iid ?
+			[{ iid: fx.iid, amount: fx.amount, kind: fx.kind }] : [];
+		hits.forEach(h => {
+			if (h.kind !== 'damage' && h.kind !== 'heal') return;
+			const mon = findMonView(oldPlayers, h.iid);
+			if (!mon || !h.amount) return;
+			const cur = live.hp[h.iid] ?? mon.hp;
+			live.hp[h.iid] = h.kind === 'damage' ?
+				Math.max(0, cur - h.amount) :
+				Math.min(mon.maxHp || cur + h.amount, cur + h.amount);
+		});
+		if ((fx.kind === 'energy' || fx.kind === 'tool') && fx.iid) {
+			const after = findMonView(finalPlayers, fx.iid);
+			if (after?.energy) live.energy[fx.iid] = after.energy;
+		}
+		this.liveNow = live;
+		return live;
+	}
+
+	noteRemovals(snap: TcgSnapshot) {
+		if (this.lastSnap && this.lastSnap !== snap) {
+			const prev = this.lastSnap;
+			Object.keys(this.monMemory).forEach(iid => {
+				if (findMonView(prev.players, iid) && !findMonView(snap.players, iid)) {
+					this.freshOut[iid] = true;
+				}
+			});
+			// Setup placeholders that just turned face up get one flip animation.
+			this.revealing = {};
+			Object.keys(this.faceDownSeen).forEach(iid => {
+				const now = findMonView(snap.players, iid);
+				if (now && !now.faceDown) {
+					this.revealing[iid] = true;
+					delete this.faceDownSeen[iid];
+				} else if (!now) {
+					delete this.faceDownSeen[iid];
+				}
+			});
+		}
+		snap.players.forEach(p => {
+			if (p?.active?.faceDown) this.faceDownSeen[p.active.iid] = true;
+			(p?.bench || []).forEach(m => { if (m?.faceDown) this.faceDownSeen[m.iid] = true; });
+		});
+		this.lastSnap = snap;
 	}
 
 	rememberMons(snap: TcgSnapshot) {
@@ -1715,18 +2245,51 @@ export class TcgBoard extends preact.Component<{
 	}
 
 	displayMon(seat: number, slot: TcgSlot, live: TcgPokemonView | null): TcgPokemonView | null {
-		if (live) return live;
+		const placed = this.state.placeIn;
+		if (placed && placed.seat === seat && sameSlot(placed.slot, slot)) return placed.mon;
+		// Keep the real card through the KO. Swapping it for a copy made it vanish and pop back.
+		if (live && this.state.koHide[live.iid]) return null;
+		if (live && placed && live.iid === placed.mon.iid) return null;
+		if (live) {
+			const overlay = this.liveOverlay();
+			const hp = overlay.hp[live.iid];
+			const energy = overlay.energy[live.iid];
+			if (hp == null && !energy) return live;
+			return { ...live, hp: hp ?? live.hp, energy: energy || live.energy };
+		}
 		const g = this.state.koGhost;
-		if (!g || g.seat !== seat) return null;
-		if (g.slot !== slot && String(g.slot) !== String(slot)) return null;
-		return {
-			iid: g.iid,
-			cardId: g.cardId,
-			name: g.name,
-			image: g.image,
-			hp: g.hp ?? 0,
-			maxHp: g.maxHp ?? g.hp ?? 0,
-		};
+		if (g && g.seat === seat && sameSlot(g.slot, slot)) {
+			return {
+				iid: g.iid,
+				cardId: g.cardId,
+				name: g.name,
+				image: g.image,
+				hp: g.hp ?? 0,
+				maxHp: g.maxHp ?? g.hp ?? 0,
+			};
+		}
+		const fx = this.state.fx;
+		const events = this.props.events || [];
+		let held: TcgPokemonView | null = null;
+		Object.keys(this.monMemory).forEach(iid => {
+			if (held) return;
+			const mem = this.monMemory[iid];
+			if (!mem || mem.seat !== seat || !sameSlot(mem.slot, slot)) return;
+			if (findMonView(this.props.snapshot.players, iid)) return;
+			const knocking = (fx?.kind === 'ko' && fx.iid === iid) ||
+				events.some(e => e.type === 'ko' && e.iid === iid) ||
+				!!this.freshOut[iid];
+			if (!knocking) return;
+			held = {
+				iid: mem.iid,
+				cardId: mem.cardId,
+				name: mem.name,
+				image: mem.image,
+				hp: mem.hp ?? 0,
+				maxHp: mem.maxHp ?? mem.hp ?? 0,
+			};
+		});
+		return held;
 	}
 
 	aimFlyers() {
@@ -1758,21 +2321,57 @@ export class TcgBoard extends preact.Component<{
 	}
 
 	playFx(events: TcgEvent[]) {
-		if (this.timer != null) window.clearTimeout(this.timer);
 		if (!events?.length || PS.prefs.noanim) {
-			this.clearFx();
+			if (!this.fxBusy) this.clearFx();
 			return;
 		}
-		const players = this.props.snapshot.players;
-		const you = this.props.snapshot.you;
+		// A fast CPU can deliver the next action before this one finishes.
+		// Keep playing the current beat, then the new events, each for a fixed time.
+		if (this.fxBusy) {
+			this.fxPending.push(...events);
+			return;
+		}
+		this.fxBusy = true;
+		this.runFx(events);
+	}
+
+	finishFx() {
+		if (this.fxPending.length) {
+			const next = this.fxPending;
+			this.fxPending = [];
+			this.runFx(next);
+			return;
+		}
+		this.fxBusy = false;
+		const more = this.props.onFxDone?.() ?? false;
+		if (!more) this.clearFx();
+	}
+
+	runFx(events: TcgEvent[]) {
+		if (this.timer != null) window.clearTimeout(this.timer);
+		// New batch, new baseline: props.snapshot now already reflects the previous batch.
+		this.liveNow = { hand: {}, hp: {}, energy: {} };
+		const shown = this.props.fxSnapshot || this.props.snapshot;
+		const players = shown.players;
+		const you = shown.you;
 		let i = 0;
 		let fxTick = 0;
-		const HIT_MS = 1000;
-		const WINDUP_MS = 800;
+		const HIT_MS = 1600;
+		const WINDUP_MS = 1200;
+		const BEAT_MS = 1600;
 
 		const show = (fx: FxBeat, e?: TcgEvent) => {
 			fxTick++;
 			let koGhost: KoGhost | null = null;
+			let placeIn: TcgBoard['state']['placeIn'] = null;
+			const koHide = { ...this.state.koHide };
+			const koStillQueued = (this.props.events || []).some(ev => ev.type === 'ko' && ev.iid && this.freshOut[ev.iid]);
+			if (!koStillQueued && fx.kind !== 'ko' && fx.kind !== 'damage' && fx.kind !== 'attack' && fx.kind !== 'ability') {
+				this.freshOut = {};
+			}
+			if (this.state.fx?.kind === 'ko' && this.state.fx.iid && fx.kind !== 'ko') {
+				delete this.freshOut[this.state.fx.iid];
+			}
 			if (fx.kind === 'ko') {
 				koGhost = e ? this.ghostForKo(fx, e) : (fx.iid ? this.monMemory[fx.iid] || null : null);
 				if (koGhost && !fx.extra) fx.extra = koGhost.name;
@@ -1780,17 +2379,42 @@ export class TcgBoard extends preact.Component<{
 					fx.message = `${koGhost.name} was Knocked Out`;
 				}
 			}
-			this.setState({ fx, pkFx: buildPkFx(fx, fxTick), koGhost });
+			if (fx.kind === 'place' && fx.iid) {
+				const nextPlayers = this.props.fxSnapshot?.players || this.props.snapshot.players;
+				const incoming = findMonView(nextPlayers, fx.iid) ||
+					(fx.cardId ? {
+						iid: fx.iid,
+						cardId: fx.cardId,
+						name: fx.extra || cardLabel(fx.cardId),
+						hp: 0,
+						maxHp: 0,
+						image: this.monMemory[fx.iid]?.image,
+					} : null);
+				const dest = findMonSlot(nextPlayers, fx.iid);
+				const seat = dest?.seat ?? fx.seat ?? 0;
+				const slot = dest?.slot ?? fx.slot ?? 'active';
+				const fromOld = findMonSlot(this.props.snapshot.players, fx.iid);
+				fx.fromBench = !!(fromOld && fromOld.slot !== 'active' && slot === 'active');
+				if (incoming) placeIn = { seat, slot, mon: incoming };
+			}
+			this.setState({
+				fx, pkFx: buildPkFx(fx, fxTick), koGhost, koHide, placeIn,
+				live: this.applyLive(fx, you), liveKey: this.props.fxKey,
+			});
 		};
 
 		const step = () => {
-			while (i < events.length && skipEvent(events, i)) i++;
+			while (i < events.length && skipEvent(events, i)) {
+				this.props.onEvent?.(events[i]);
+				i++;
+			}
 			if (i >= events.length) {
-				this.clearFx();
+				this.finishFx();
 				return;
 			}
 			const e = events[i];
-			let fx = fxFor(e, events, i, players, you);
+			this.props.onEvent?.(e);
+			let fx = fxFor(e, events, i, players, you, shown);
 
 			// Prefer private draw ids from the event; otherwise infer from hand delta for your seat.
 			if ((fx.kind === 'draw' || fx.kind === 'drawEffect') && e.type === 'draw') {
@@ -1824,14 +2448,74 @@ export class TcgBoard extends preact.Component<{
 					show(fx, e);
 					this.stashHands(this.props.snapshot);
 					i++;
-					const wait = fx.kind === 'drawEffect' ? 3200 : Math.max(fxDuration(e), 400);
+					const wait = Math.max(fx.kind === 'drawEffect' ? 3200 : fxDuration(e), BEAT_MS);
 					this.timer = window.setTimeout(step, wait);
 				}, 2000);
 				return;
 			}
 
+			// Consecutive coin events → one staggered multi-coin beat.
+			// Opening flip often arrives as coin + first; fold the announce into the coin beat.
+			if (e.type === 'coin' || e.type === 'first') {
+				const results: boolean[] = [];
+				let j = i;
+				if (e.type === 'coin') {
+					results.push(!!e.heads);
+					j = i + 1;
+					while (j < events.length && events[j]?.type === 'coin') {
+						this.props.onEvent?.(events[j]);
+						results.push(!!events[j].heads);
+						j++;
+					}
+				}
+				let firstEv: TcgEvent | null = null;
+				if (e.type === 'first') {
+					firstEv = e;
+					j = i + 1;
+					// No coin event (older server): invent a face so the opening flip still animates.
+					// Seat 0 won → Heads, seat 1 → Tails (matches engine mapping).
+					results.push(e.seat === 0);
+				} else if (events[j]?.type === 'first') {
+					this.props.onEvent?.(events[j]);
+					firstEv = events[j];
+					j++;
+				}
+				const headsN = results.filter(Boolean).length;
+				const tailsN = results.length - headsN;
+				const whoFirst = firstEv?.seat != null ?
+					actorLabel(players, firstEv.seat, you) : '';
+				const youWonFirst = firstEv ? actorIsYou(firstEv.seat, you) : false;
+				const coinFx: FxBeat = {
+					kind: 'coin',
+					coins: results,
+					n: results.length,
+					seat: firstEv?.seat ?? e.seat,
+					extra: firstEv ? 'First' :
+						(results.length === 1 ?
+							(results[0] ? 'Heads' : 'Tails') :
+							`${results.length} flips`),
+					message: firstEv ?
+						(firstEv.chooses ?
+							(youWonFirst ?
+								'You won the coin flip and choose who goes first' :
+								`${whoFirst} won the coin flip and chooses who goes first`) :
+							(youWonFirst ?
+								'You won the coin flip and go first' :
+								`${whoFirst} won the coin flip and goes first`)) :
+						(results.length === 1 ?
+							(results[0] ? 'Heads!' : 'Tails!') :
+							`${headsN} Heads · ${tailsN} Tails`),
+				};
+				show(coinFx);
+				// Flip (~1.55s) + stagger + hold; linger a bit longer for the first-player announce.
+				const wait = (firstEv ? 2600 : 2100) + Math.max(0, results.length - 1) * 200;
+				i = j;
+				this.timer = window.setTimeout(step, wait);
+				return;
+			}
+
 			if (e.type === 'attack' || e.type === 'ability') {
-				const hits = attackHits(events, i);
+				const hits = attackHits(events, i, players);
 				if (!fx.extra) fx.extra = e.name || (e.type === 'ability' ? 'Ability' : 'Attack');
 				if (!fx.message) fx.message = `${monName(players, e.iid)} used ${fx.extra}`;
 
@@ -1846,7 +2530,7 @@ export class TcgBoard extends preact.Component<{
 						const playStatus = () => {
 							if (hi >= statusHits.length) {
 								i++;
-								this.timer = window.setTimeout(step, 120);
+								this.timer = window.setTimeout(step, BEAT_MS);
 								return;
 							}
 							const h = statusHits[hi++];
@@ -1862,7 +2546,7 @@ export class TcgBoard extends preact.Component<{
 						return;
 					}
 					i++;
-					this.timer = window.setTimeout(step, 120);
+					this.timer = window.setTimeout(step, BEAT_MS);
 					return;
 				}
 				if (numbered.length > 1) {
@@ -1872,7 +2556,7 @@ export class TcgBoard extends preact.Component<{
 					const playHit = () => {
 						if (hi >= hits.length) {
 							i++;
-							this.timer = window.setTimeout(step, 180);
+							this.timer = window.setTimeout(step, BEAT_MS);
 							return;
 						}
 						const h = hits[hi++];
@@ -1892,6 +2576,7 @@ export class TcgBoard extends preact.Component<{
 							amount: h.amount,
 							src: h.src || (e.type === 'ability' ? 'ability' : 'attack'),
 							extra: h.label || fx.extra,
+							element: h.element,
 							hits: [h],
 						};
 						show(hitFx);
@@ -1906,7 +2591,22 @@ export class TcgBoard extends preact.Component<{
 			}
 
 			show(fx, e);
-			const wait = fx.kind === 'drawEffect' ? 3200 : Math.max(fxDuration(e), 400);
+			let wait = Math.max(fx.kind === 'drawEffect' ? 3200 : fxDuration(e), BEAT_MS);
+			// Knockout should follow the hit, not sit through a pause that lets the card vanish.
+			if (e.type === 'attack' || e.type === 'ability') {
+				let koFollows = false;
+				for (let j = i + 1; j < events.length; j++) {
+					const n = events[j];
+					if (!n) break;
+					const t = String(n.type || '');
+					if (t === 'damage' || t === 'heal' || t === 'status' || t === 'request' || t === 'act' || t === 'coin') {
+						continue;
+					}
+					koFollows = t === 'ko';
+					break;
+				}
+				if (koFollows) wait = HIT_MS + 400;
+			}
 			i++;
 			this.timer = window.setTimeout(step, wait);
 		};
@@ -1916,12 +2616,24 @@ export class TcgBoard extends preact.Component<{
 	openInspect = (inspect: Preview) => {
 		this.setState({ inspect });
 	};
+	/** Finger stayed down long enough to preview; drop the in-progress drag so it is not a play. */
+	onCardHold = () => {
+		this.holdConsumed = true;
+		this.dragMoved = true;
+		if (this.state.drag) this.setState({ drag: null });
+	};
 	closeInspect = () => {
 		if (this.state.inspect) this.setState({ inspect: null });
 	};
 
 	choose = (a: TcgAction) => {
-		this.setState({ selectedHand: null, energyPick: false, retreatPick: false, drag: null, menuSlot: null, endTurnConfirm: false });
+		const prizeTakenLocal = a.type === 'takePrize' ?
+			this.state.prizeTakenLocal + 1 :
+			0;
+		this.setState({
+			selectedHand: null, energyPick: false, retreatPick: false, drag: null,
+			menuSlot: null, endTurnConfirm: false, prizeTakenLocal,
+		});
 		this.props.onAct(a);
 	};
 
@@ -1942,6 +2654,7 @@ export class TcgBoard extends preact.Component<{
 		}
 		e.preventDefault();
 		this.dragMoved = false;
+		this.holdConsumed = false;
 		this.setState({
 			selectedHand: null,
 			energyPick: false,
@@ -2006,7 +2719,10 @@ export class TcgBoard extends preact.Component<{
 		const dx = e.clientX - drag.originX;
 		const dy = e.clientY - drag.originY;
 		const active = drag.active || Math.hypot(dx, dy) > 8;
-		if (active) this.dragMoved = true;
+		if (active) {
+			this.dragMoved = true;
+			this.holdConsumed = false;
+		}
 		const over = active ? this.hitDrop(e.clientX, e.clientY) : null;
 		let hint = drag.hint;
 		if (active && over) {
@@ -2027,6 +2743,11 @@ export class TcgBoard extends preact.Component<{
 
 	onDragEnd = (e: PointerEvent) => {
 		const drag = this.state.drag;
+		if (this.holdConsumed) {
+			this.holdConsumed = false;
+			if (drag) this.setState({ drag: null });
+			return;
+		}
 		if (!drag) return;
 		const over = drag.active ? this.hitDrop(e.clientX, e.clientY) : null;
 		const hits = over ? actionsForDrop(this.acts(), drag, over) : [];
@@ -2210,7 +2931,9 @@ export class TcgBoard extends preact.Component<{
 
 	override render() {
 		const snap = this.props.snapshot;
+		this.noteRemovals(snap);
 		this.rememberMons(snap);
+		this.rememberMons(this.props.fxSnapshot || snap);
 		const meIndex = snap.you != null ? snap.you : 0;
 		const foeIndex = meIndex === 0 ? 1 : 0;
 		const me = snap.players[meIndex];
@@ -2219,7 +2942,16 @@ export class TcgBoard extends preact.Component<{
 			return <div class="tcg-table"><p class="tcg-waiting">Waiting for TCG snapshot…</p></div>;
 		}
 		const benchSize = snap.format?.benchSize || Math.max(me.bench.length, foe.bench.length, 3);
-		const myHand = handIds(me.hand);
+		const myHandAll = handIds(me.hand);
+		// Cards whose play beat has already run leave the fan now, not when the batch commits.
+		const spent = { ...this.liveOverlay().hand };
+		const myHand = myHandAll && myHandAll
+			.map((id, i) => ({ id, i }))
+			.filter(c => {
+				if (!spent[c.id]) return true;
+				spent[c.id]--;
+				return false;
+			});
 		const shuffleFx = this.state.fx?.kind === 'shuffleHand' ? this.state.fx : null;
 		const shufflingMine = !!(shuffleFx && actorIsYou(shuffleFx.seat, snap.you));
 		const shufflingFoe = !!(shuffleFx && !actorIsYou(shuffleFx.seat, snap.you));
@@ -2231,8 +2963,11 @@ export class TcgBoard extends preact.Component<{
 		const yourTurn = !this.props.ended && !this.props.waiting && allActs.length > 0;
 		const turnSeat = typeof snap.turn === 'number' ? snap.turn : null;
 		const turnOwner = turnSeat != null ? snap.players[turnSeat] : null;
-		const isMyTurnSeat = turnSeat != null && turnSeat === meIndex;
-		const turnWho = this.props.ended ? '' :
+		// A spectator sits behind seat 0 for layout, but it is never "their" turn.
+		const isMyTurnSeat = snap.you != null && turnSeat != null && turnSeat === meIndex;
+		// After the game, a replay re-shows earlier snapshots: label those by turn, not "End".
+		const replaying = !!this.props.ended && snap.status !== 'over';
+		const turnWho = this.props.ended && !replaying ? '' :
 			snap.status === 'setup' ? 'Setup phase' :
 			isMyTurnSeat ? 'Your turn' :
 			turnOwner ? `${turnOwner.name}'s turn` : '';
@@ -2255,7 +2990,10 @@ export class TcgBoard extends preact.Component<{
 		const searches = allActs.filter(a => a.type === 'searchPick' || a.type === 'searchDone');
 		const discards = allActs.filter(a => a.type === 'discardPick');
 		const pays = allActs.filter(a => a.type === 'payEnergy');
-		const prizes = allActs.filter(a => a.type === 'takePrize');
+		const prizeActs = allActs.filter(a => a.type === 'takePrize');
+		const prizeNeed = snap.pendingPrize?.n || 0;
+		// Snapshot (and takePrize actions) lag until prize FX commits — hide as soon as enough picks are sent.
+		const prizes = (prizeNeed > 0 && this.state.prizeTakenLocal >= prizeNeed) ? [] : prizeActs;
 		const mulligans = allActs.filter(a => a.type === 'mulliganBench' || a.type === 'mulliganDone');
 		const useStadium = allActs.find(a => a.type === 'useStadium');
 		const selectedHand = this.state.selectedHand;
@@ -2287,7 +3025,8 @@ export class TcgBoard extends preact.Component<{
 		const stadiumHot = dragging && drag!.over?.kind === 'stadium' && stadiumDropHits.length > 0;
 		const discardHot = dragging && drag!.over?.kind === 'discard' && discardDropHits.length > 0;
 
-		const hint = (dragging && drag!.hint) ||
+		// No coaching once the game is over (replays re-show setup-phase snapshots).
+		const hint = this.props.ended ? '' : (dragging && drag!.hint) ||
 			snap.pendingConfirm?.text ||
 			(this.state.energyPick ? 'Choose a Pokémon for Energy' : '') ||
 			(this.state.retreatPick ? 'Choose a Benched Pokémon to switch in' : '') ||
@@ -2299,22 +3038,36 @@ export class TcgBoard extends preact.Component<{
 			(snap.pendingDiscard ? `Drag ${snap.pendingDiscard.need} card${snap.pendingDiscard.need === 1 ? '' : 's'} to Discard` : '') ||
 			(snap.pendingRetreatPay ? `Discard ${snap.pendingRetreatPay.need} Energy to retreat` : '') ||
 			(snap.pendingPromote != null ? 'Choose a Benched Pokémon to promote' : '') ||
-			(snap.pendingPrize ? `Take ${snap.pendingPrize.n} Prize card${snap.pendingPrize.n === 1 ? '' : 's'}` : '') ||
-			(prizes.length ? 'Take a Prize card' : '') ||
+			(prizes.length && snap.pendingPrize ?
+				`Take ${Math.max(1, snap.pendingPrize.n - this.state.prizeTakenLocal)} Prize card${
+					snap.pendingPrize.n - this.state.prizeTakenLocal === 1 ? '' : 's'
+				}` :
+				prizes.length ? 'Take a Prize card' : '') ||
 			(discards.length ? 'Drag a card to Discard' : '') ||
 			(snap.status === 'setup' ? 'Drag Basics to Active / Bench, then Ready' : '') ||
 			(yourTurn ? 'Drag cards to play · Tap your Pokémon to attack' : '');
 
-		const waitingOpp = !this.props.ended && (
-			this.props.waiting ||
-			(!yourTurn && !allActs.length) ||
-			(turnSeat != null && !isMyTurnSeat && !allActs.length)
-		);
+		// Only call it "waiting for opponent" when the opponent actually holds the
+		// turn (or still has setup to finish); a server round-trip during our own
+		// turn is not their fault and the banner would just flash on every click.
+		const foeHoldsTurn = snap.status === 'setup' ?
+			me.setup === 'done' && foe.setup !== 'done' :
+			turnSeat != null && !isMyTurnSeat;
+		const waitingOpp = !this.props.ended && snap.you != null && !allActs.length && foeHoldsTurn &&
+			(this.props.waiting || !yourTurn);
 		const st = this.state;
-		const winName = (this.props.winnerName != null && this.props.winnerName !== '') ?
+		let winName = (this.props.winnerName != null && this.props.winnerName !== '') ?
 			this.props.winnerName :
 			(snap.winner != null ? snap.players[snap.winner]?.name : null);
-		const showWinBanner = !!this.props.ended && !(st.fx && st.fx.kind === 'over');
+		if (st.fx?.kind === 'over') {
+			if (st.fx.tie) winName = null;
+			else {
+				const fromFx = String(st.fx.extra || '').match(/^(.+?)\s+wins?\.?$/i)?.[1];
+				if (fromFx && !/^draw$/i.test(fromFx)) winName = fromFx;
+			}
+		}
+		// Same node from the ending beat through the result, so the fade-in does not replay.
+		const showWinBanner = st.fx?.kind === 'over' || (!!this.props.ended && !st.fx);
 
 		const tableClass = [
 			'tcg-table', pocket ? 'pocket' : 'live',
@@ -2332,7 +3085,11 @@ export class TcgBoard extends preact.Component<{
 		const canAttach = allActs.some(a => a.type === 'attachZone');
 		const zone = me.energyZone;
 
-		return <div class={tableClass} ref={el => { this.tableEl = el as HTMLElement | null; }}>
+		return <div
+			class={tableClass}
+			ref={el => { this.tableEl = el as HTMLElement | null; }}
+			onContextMenu={ev => ev.preventDefault()}
+		>
 			<div class="tcg-felt"></div>
 			{waitingOpp && !(st.fx && (st.fx.kind === 'turn' || st.fx.kind === 'search' || st.fx.kind === 'mulligan')) &&
 				<div class="tcg-wait-banner" aria-live="polite">
@@ -2349,7 +3106,7 @@ export class TcgBoard extends preact.Component<{
 				<div class="tcg-inspect-card" onClick={ev => ev.stopPropagation()}>
 					{inspectSrc ? <img src={inspectSrc} alt={inspect.name || inspect.cardId} /> : null}
 					<button type="button" class="tcg-inspect-close" onClick={this.closeInspect}>Close</button>
-					<p class="tcg-inspect-hint">Right-click any card to inspect · Esc / click outside to close</p>
+					<p class="tcg-inspect-hint">Hold a card to preview · tap outside to close</p>
 				</div>
 			</div>}
 
@@ -2358,12 +3115,17 @@ export class TcgBoard extends preact.Component<{
 					<span class="tcg-avatar foe" aria-hidden="true">{(foe.name || '?').slice(0, 1).toUpperCase()}</span>
 					<div class="tcg-player-meta">
 						<span class="tcg-name">{foe.name}</span>
+						<span class="tcg-hand-count" title={`${pileCount(foe.hand)} in hand`}>{pileCount(foe.hand)}</span>
 					</div>
 				</div>
-				<div class={`tcg-turn-badge${yourTurn || isMyTurnSeat ? ' yours' : ''}${this.props.ended ? ' over' : ''}${!isMyTurnSeat && turnSeat != null ? ' foe' : ''}`}>
-					<span class="tcg-turn-num">{this.props.ended ? 'End' : snap.status === 'setup' ? 'Setup' : `Turn ${snap.turnNumber || 1}`}</span>
+				<div class={`tcg-turn-badge${yourTurn || isMyTurnSeat ? ' yours' : ''}${this.props.ended && !replaying ? ' over' : ''}${!isMyTurnSeat && turnSeat != null ? ' foe' : ''}`}>
+					<span class="tcg-turn-num">
+						{this.props.ended && !replaying ? 'End' : snap.status === 'setup' ? 'Setup' : `Turn ${snap.turnNumber || 1}`}
+					</span>
 					{turnWho && <span class="tcg-turn-who">{turnWho}</span>}
 				</div>
+				{/* Balances the grid so the turn badge stays centered; chrome (Timer) docks here. */}
+				<div class="tcg-hud-tools" aria-hidden="true"></div>
 			</header>
 
 			<div class="tcg-dock-foe" title={`${pileCount(foe.hand)} in hand`}>
@@ -2398,6 +3160,7 @@ export class TcgBoard extends preact.Component<{
 								const ghost = !mon && !!shown;
 								return <TcgMon
 									key={`fb${i}`} mon={shown} slot={i} foe size="sm"
+									reveal={!!shown && !!this.revealing[shown.iid]}
 									legal={!ghost && this.slotActionable(i, true)}
 									{...this.slotDropMeta(i, true, !mon)}
 									{...monFx(shown)}
@@ -2408,6 +3171,7 @@ export class TcgBoard extends preact.Component<{
 						<div class="tcg-zone tcg-active-spot foe">
 							<TcgMon
 								mon={foeActive} slot="active" activeSpot foe size="lg"
+								reveal={!!foeActive && !!this.revealing[foeActive.iid]}
 								legal={!foe.active && foeActive ? false : this.slotActionable('active', true)}
 								{...this.slotDropMeta('active', true, !foe.active)}
 								{...monFx(foeActive)}
@@ -2497,6 +3261,7 @@ export class TcgBoard extends preact.Component<{
 						<div class="tcg-zone tcg-active-spot me">
 							<TcgMon
 								mon={meActive} slot="active" activeSpot size="lg"
+								reveal={!!meActive && !!this.revealing[meActive.iid]}
 								legal={!me.active && meActive ? false : this.slotActionable('active')}
 								{...this.slotDropMeta('active', false, !me.active)}
 								{...monFx(meActive)}
@@ -2511,6 +3276,7 @@ export class TcgBoard extends preact.Component<{
 								const ghost = !mon && !!shown;
 								return <TcgMon
 									key={`mb${i}`} mon={shown} slot={i} size="sm"
+									reveal={!!shown && !!this.revealing[shown.iid]}
 									legal={!ghost && this.slotActionable(i)}
 									{...this.slotDropMeta(i, false, !mon)}
 									{...monFx(shown)}
@@ -2571,16 +3337,21 @@ export class TcgBoard extends preact.Component<{
 								fanIndex={i} fanCount={shuffleHandCount}
 							/>
 						)
-				) : myHand ? myHand.map((id, i) => {
+				) : myHand ? myHand.map(({ id, i }, fan) => {
 					const playable = allActs.some(a => actionTouchesHand(a, i));
+					// Key by "nth copy of this card", not by index, so playing one card lets the
+					// rest glide over instead of remounting every card to its right.
+					let nth = 0;
+					for (let j = 0; j < fan; j++) if (myHand[j].id === id) nth++;
 					return <TcgCardFace
-						key={`${id}-${i}`} cardId={id} size="md"
+						key={`${id}#${nth}`} cardId={id} size="md"
 						pocket={pocket}
 						selected={this.state.selectedHand === i}
 						playable={playable}
 						dragging={drag?.source === 'hand' && drag.hand === i && dragging}
-						fanIndex={i} fanCount={myHand.length}
+						fanIndex={fan} fanCount={myHand.length}
 						onPointerDown={playable ? (ev: any) => this.startHandDrag(i, id, ev) : undefined}
+						onHold={this.onCardHold}
 						onInspect={this.openInspect}
 					/>;
 				}) : Array.from({ length: pileCount(me.hand) }, (_, i) =>
@@ -2591,6 +3362,17 @@ export class TcgBoard extends preact.Component<{
 
 			{hint && <div class="tcg-float-hint">{hint}</div>}
 
+			{this.props.ended && this.props.showReplayControls !== false && <div class="tcg-replay-controls">
+				<button type="button" class="button" onClick={this.props.onTogglePause}>
+					<i class={`fa fa-${this.props.paused ? 'play' : 'pause'}`} aria-hidden></i> {this.props.paused ? 'Play' : 'Pause'}
+				</button>
+				<button type="button" class="button" onClick={this.props.onReplay}>
+					<i class="fa fa-undo" aria-hidden></i> Replay
+				</button>
+				<button type="button" class="button" onClick={this.props.onSkip}>
+					<i class="fa fa-fast-forward" aria-hidden></i> Skip to end
+				</button>
+			</div>}
 			<div class="tcg-live-controls">
 				{(this.state.selectedHand != null || this.state.energyPick || this.state.retreatPick || this.state.menuSlot != null) &&
 					<button type="button" class="tcg-cancel" onClick={this.clearSel}>Cancel</button>}
@@ -2614,9 +3396,6 @@ export class TcgBoard extends preact.Component<{
 				}}>
 					End<br />Turn
 				</button>}
-				{this.props.ended && <p class="tcg-waiting">
-					{winName ? `${winName} won.` : (snap.winReason || 'Battle ended.')}
-				</p>}
 			</div>
 
 			{this.state.menuSlot != null && (() => {
@@ -2812,7 +3591,7 @@ export class TcgBoard extends preact.Component<{
 			</div>}
 			<FxOverlay
 				key={st.fx ? `${st.fx.kind}-${st.fx.iid || ''}-${st.fx.amount || ''}-${Object.values(st.pkFx)[0]?.tick || 0}` : 'fx'}
-				fx={st.fx} you={snap.you}
+				fx={st.fx} you={snap.you} names={snap.players.map(p => p?.name || '')}
 			/>
 		</div>;
 	}

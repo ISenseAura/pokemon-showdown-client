@@ -127,8 +127,8 @@ export class ChatRoom extends PSRoom {
 				if (args[2]) this.connectError = args[2];
 			} else if (this.battle && args[1] === 'joinfailed') {
 				this.connectError = args[2] || 'Not found';
-			} else if (this.battle) {
-				// check the Replays database
+			} else if (this.battle || this.id.startsWith('battle-tcg') || (this as any as BattleRoom).tcgMode) {
+				// check the Replays database (VG or TCG)
 				(this as any as BattleRoom).loadReplay();
 			} else {
 				this.connectError = args[2] || `Chatroom "${this.title}" not found`;
@@ -581,6 +581,17 @@ export class ChatRoom extends PSRoom {
 		// battle-specific commands
 		// ------------------------
 		'play'() {
+			const tcgRoom = this as any as BattleRoom;
+			if (tcgRoom.tcgMode) {
+				if (tcgRoom.tcgEnded || tcgRoom.tcgReplayMode) {
+					tcgRoom.replayTcg();
+				} else {
+					tcgRoom.tcgPaused = false;
+					tcgRoom.pumpTcg();
+					tcgRoom.update(null);
+				}
+				return;
+			}
 			if (!this.battle) return this.errorReply('You are not in a battle');
 			if (this.battle.atQueueEnd) {
 				if (this.battle.ended) this.battle.isReplay = true;
@@ -590,11 +601,35 @@ export class ChatRoom extends PSRoom {
 			this.update(null);
 		},
 		'pause'() {
+			const tcgRoom = this as any as BattleRoom;
+			if (tcgRoom.tcgMode) {
+				tcgRoom.tcgPaused = true;
+				tcgRoom.update(null);
+				return;
+			}
 			if (!this.battle) return this.errorReply('You are not in a battle');
 			this.battle.pause();
 			this.update(null);
 		},
 		'ffto,fastfowardto'(target, cmd, parentElem) {
+			const tcgRoom = this as any as BattleRoom;
+			if (tcgRoom.tcgMode) {
+				if (!target) {
+					PS.prompt("Turn number?", {
+						defaultValue: `${tcgRoom.turnAtHistoryIndex(
+							tcgRoom.tcgSeekIndex < 0 ? tcgRoom.tcgHistory.length - 1 : tcgRoom.tcgSeekIndex
+						)}`,
+						type: 'numeric',
+						okButton: 'Go',
+						parentElem,
+					}).then(turnNum => {
+						if (turnNum?.trim()) this.send(`/ffto ${turnNum}`, parentElem);
+					});
+					return;
+				}
+				tcgRoom.fftoTcg(target === 'end' ? 'end' : target);
+				return;
+			}
 			if (!this.battle) return this.errorReply('You are not in a battle');
 			if (!target) {
 				PS.prompt("Turn number?", {
@@ -627,6 +662,11 @@ export class ChatRoom extends PSRoom {
 			this.update(null);
 		},
 		'switchsides'() {
+			const tcgRoom = this as any as BattleRoom;
+			if (tcgRoom.tcgMode) {
+				tcgRoom.switchTcgViewpoint();
+				return;
+			}
 			if (!this.battle) return this.errorReply('You are not in a battle');
 			this.battle.switchViewpoint();
 		},

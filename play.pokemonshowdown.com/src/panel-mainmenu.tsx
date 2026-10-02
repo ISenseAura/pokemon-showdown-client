@@ -15,7 +15,7 @@ import type { ChatRoom } from "./panel-chat";
 import type { LadderFormatRoom } from "./panel-ladder";
 import type { RoomsRoom } from "./panel-rooms";
 import { TeamBox, type SelectType } from "./panel-teamdropdown";
-import { Dex, toID, type ID } from "./battle-dex";
+import { toID, type ID } from "./battle-dex";
 import type { Args } from "./battle-text-parser";
 import { BattleLog } from "./battle-log"; // optional
 
@@ -130,6 +130,14 @@ export class MainMenuRoom extends PSRoom {
 				'upkeep', { challstr }
 			).then(res => {
 				if (!res?.username) {
+					let saved = '';
+					try {
+						saved = localStorage.getItem('showdown_username') || '';
+					} catch {}
+					if (saved && toID(saved)) {
+						PS.user.changeName(saved);
+						return;
+					}
 					PS.user.initializing = false;
 					return;
 				}
@@ -331,6 +339,8 @@ export class MainMenuRoom extends PSRoom {
 				}
 				// make sure formats aren't out-of-order
 				if (BattleFormats[id]) delete BattleFormats[id];
+				const tcgLadder = toID(id).replace(/^gen\d/, '').startsWith('tcg');
+				if (tcgLadder) searchShow = true;
 				BattleFormats[id] = {
 					id,
 					name,
@@ -343,7 +353,7 @@ export class MainMenuRoom extends PSRoom {
 					bestOfDefault,
 					teraPreviewDefault,
 					itemClauseDefault,
-					rated: searchShow && id.substr(4, 7) !== 'unrated',
+					rated: tcgLadder || (searchShow && id.substr(4, 7) !== 'unrated'),
 					teambuilderLevel,
 					partner,
 					teambuilderFormat,
@@ -495,6 +505,9 @@ export class MainMenuRoom extends PSRoom {
 				}
 			}
 			break;
+		case 'tcgvalidate':
+			if (typeof receiveTcgValidate === 'function') receiveTcgValidate(response);
+			break;
 		}
 		for (const callback of this.listeners[fullid] || []) callback(response);
 		delete this.listeners[fullid];
@@ -506,46 +519,8 @@ class NewsPanel extends PSRoomPanel {
 	static readonly routes = ['news'];
 	static readonly title = 'News';
 	static readonly location = 'mini-window';
-	change = (ev: Event) => {
-		const target = ev.currentTarget as HTMLInputElement;
-		this.setClient(target.value as '0' | '1' | 'leave');
-	};
-	setClient(setting: '0' | '1' | 'leave') {
-		if (setting === '1') {
-			document.cookie = "preactalpha=1; expires=Thu, 1 Sep 2026 12:00:00 UTC; path=/";
-		} else if (setting === '0') {
-			document.cookie = "preactalpha=0; expires=Thu, 1 Sep 2026 12:00:00 UTC; path=/";
-		} else {
-			document.cookie = "preactalpha=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
-		}
-		if (setting === 'leave') {
-			document.location.href = `/`;
-		}
-	}
-	override componentDidMount() {
-		if (!document.cookie.includes('preactalpha=')) this.setClient('1');
-	}
 	override render() {
-		const cookieSet = !document.cookie.includes('preactalpha=0');
 		return <PSPanelWrapper room={this.props.room} fullSize>
-			<div class="construction">
-				This is the client rewrite beta test.
-				<form>
-					<label class="checkbox">
-						<input type="radio" name="preactalpha" value="1" onChange={this.change} checked={cookieSet} /> {}
-						Use Rewrite always
-					</label>
-					<label class="checkbox">
-						<input type="radio" name="preactalpha" value="0" onChange={this.change} checked={!cookieSet} /> {}
-						Use Rewrite with URL
-					</label>
-					<label class="checkbox">
-						<input type="radio" name="preactalpha" value="leave" onChange={this.change} /> {}
-						Back to the old client
-					</label>
-				</form>
-				Provide feedback in <a href="development" style="color:black">the Dev chatroom</a>.
-			</div>
 			<div class="readable-bg" dangerouslySetInnerHTML={{ __html: PS.newsHTML }}></div>
 		</PSPanelWrapper>;
 	}
@@ -746,7 +721,7 @@ class MainMenuPanel extends PSRoomPanel<MainMenuRoom> {
 					{this.renderSearchButton()}
 
 					<div class="menugroup">
-						<p><a class="mainmenu2 mainmenu button" href="teambuilder">Teambuilder</a></p>
+						<p><a class="mainmenu2 mainmenu button" href="teambuilder">Decks</a></p>
 						<p><a class={"mainmenu3 mainmenu" + onlineButton} href="ladder">Ladder</a></p>
 						<p><a class={"mainmenu4 mainmenu" + onlineButton} href="view-tournaments-all">Tournaments</a></p>
 					</div>
@@ -966,8 +941,10 @@ export class TeamForm extends preact.Component<{
 		const teamElement = this.base!.querySelector<HTMLButtonElement>('button[name=team]');
 		const teamKey = teamElement!.value;
 		const team = teamKey ? PS.teams.byKey[teamKey] : undefined;
-		if (!window.BattleFormats[teambuilderFormat]?.team && !team) {
-			PS.alert('You need to go into the Teambuilder and build a team for this format.', {
+		const formatIsTcg = toID(teambuilderFormat).replace(/^gen\d/, '').startsWith('tcg');
+		// TCG constructed formats accept an empty deck (server assigns a sample).
+		if (!window.BattleFormats[teambuilderFormat]?.team && !team && !formatIsTcg) {
+			PS.alert('You need to go into Decks and build a deck for this format.', {
 				parentElem: teamElement!,
 			});
 			return;
@@ -1016,15 +993,17 @@ export class TeamForm extends preact.Component<{
 	render() {
 		if (window.BattleFormats) {
 			this.format ||= this.props.defaultFormat || '';
-			if (!this.format) {
-				this.format = `gen${Dex.gen}randombattle`;
+			if (!this.format || !toID(this.format).replace(/^gen\d/, '').startsWith('tcg')) {
+				const formats = Object.keys(window.BattleFormats);
+				this.format = formats.find(id => toID(id).includes('tcgstandardrandom')) ||
+					formats.find(id => toID(id).replace(/^gen\d/, '').startsWith('tcg')) || '';
 
 				const starredPrefs = PS.prefs.starredformats || {};
 				// .reverse() because the newest starred format should be the default one
 				const starred = Object.keys(starredPrefs).filter(id => starredPrefs[id] === true).reverse();
 				for (let id of starred) {
 					let format = window.BattleFormats[id];
-					if (!format) continue;
+					if (!format || !toID(id).replace(/^gen\d/, '').startsWith('tcg')) continue;
 					if (this.props.selectType === 'challenge' && format?.challengeShow === false) continue;
 					if (this.props.selectType === 'search' && format?.searchShow === false) continue;
 					if (this.props.selectType === 'teambuilder' && format?.team) continue;
@@ -1055,7 +1034,7 @@ export class TeamForm extends preact.Component<{
 			</p>}
 			<p>
 				<label class="label">
-					Team:<br />
+					Deck:<br />
 					<TeamDropdown format={this.props.teamFormat || this.format} />
 				</label>
 			</p>

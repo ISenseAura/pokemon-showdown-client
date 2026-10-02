@@ -9,6 +9,9 @@ import { PS, type Team } from "./client-main";
 import { PSIcon, PSPanelWrapper, PSRoomPanel } from "./panels";
 import { Dex, toID, type ID } from "./battle-dex";
 import { Teams } from "./battle-teams";
+import {
+	deckPreviewCards, getTcgCard, isTcgFormatId, isTcgPacked, loadTcgCardIndex, unpackTcgDeck,
+} from "./battle-tcg-deck";
 
 export class PSTeambuilder {
 	static exportPackedTeam(team: Team) {
@@ -156,15 +159,42 @@ export function TeamBox(props: {
 	const team = props.team;
 	let contents;
 	if (team) {
-		team.iconCache ||= team.packedTeam ? (
-			Teams.unpackSpeciesOnly(team.packedTeam).map(
-				// can't use <PSIcon>, weird interaction with iconCache
-				// don't try this at home; I'm a trained professional
-				pokemon => PSIcon({ pokemon })
-			)
-		) : (
-			<em>(empty {team.isBox ? 'box' : 'team'})</em>
-		);
+		if (isTcgFormatId(team.format) || isTcgPacked(team.packedTeam)) {
+			if (!team.iconCache) {
+				const ids = unpackTcgDeck(team.packedTeam);
+				if (!ids.length) {
+					team.iconCache = <em>(empty deck)</em>;
+				} else {
+					const indexReady = !!getTcgCard(ids[0]) || ids.every(id => !id);
+					if (!indexReady) {
+						void loadTcgCardIndex().then(() => {
+							team.iconCache = null;
+							PS.rooms.teambuilder?.update(null);
+						});
+					}
+					const sample = deckPreviewCards(ids, 6);
+					team.iconCache = <>
+						<span class="tcg-team-icons">
+							{sample.map(c => c.i ?
+								<img src={c.i} alt="" title={c.n} /> :
+								<span class="tcg-team-icon-fallback" title={c.n}>{c.n.slice(0, 3)}</span>
+							)}
+						</span>
+						<span class="tcg-team-meta">{ids.length} cards</span>
+					</>;
+				}
+			}
+		} else {
+			team.iconCache ||= team.packedTeam ? (
+				Teams.unpackSpeciesOnly(team.packedTeam).map(
+					// can't use <PSIcon>, weird interaction with iconCache
+					// don't try this at home; I'm a trained professional
+					pokemon => PSIcon({ pokemon })
+				)
+			) : (
+				<em>(empty {team.isBox ? 'box' : 'deck'})</em>
+			);
+		}
 		let format = team.format as string;
 		if (format.startsWith(Dex.modid)) format = format.slice(4);
 		format = (format ? `[${format}] ` : ``) + (team.folder ? `${team.folder}/` : ``);
@@ -174,7 +204,7 @@ export function TeamBox(props: {
 		];
 	} else {
 		contents = [
-			<em>Select a team</em>,
+			<em>Select a deck</em>,
 		];
 	}
 	const className = `team${team?.isBox ? ' pc-box' : ''}`;
@@ -340,7 +370,7 @@ class TeamDropdownPanel extends PSRoomPanel {
 				</h2>);
 			} else {
 				teamList.push(<h2>
-					<i class="fa fa-folder-open-o" aria-hidden></i> Teams not in any folders
+					<i class="fa fa-folder-open-o" aria-hidden></i> Decks not in any folders
 				</h2>);
 			}
 			teamList.push(<ul class="teamdropdown" onClick={this.click}>
@@ -353,7 +383,7 @@ class TeamDropdownPanel extends PSRoomPanel {
 
 		return <PSPanelWrapper room={room} width={width}><div class="pad">
 			{teamList}
-			{isEmpty && <p><em>No teams found</em></p>}
+			{isEmpty && <p><em>No decks found</em></p>}
 		</div></PSPanelWrapper>;
 	}
 }
@@ -408,11 +438,6 @@ class FormatDropdownPanel extends PSRoomPanel {
 		this.search = (ev.currentTarget as HTMLInputElement).value;
 		this.forceUpdate();
 	};
-	toggleGen = (ev: Event) => {
-		const target = ev.currentTarget as HTMLButtonElement;
-		this.gen = this.gen === target.value ? '' as ID : target.value as ID;
-		this.forceUpdate();
-	};
 	override render() {
 		const room = this.props.room;
 		if (!room.parentElem) {
@@ -437,21 +462,11 @@ class FormatDropdownPanel extends PSRoomPanel {
 				break;
 			}
 		}
-		const curGen = (gen: string) => this.gen === gen ? ' cur' : '';
 		const searchBar = <div style="margin-bottom: 0.5em">
 			<input
 				type="search" name="search" placeholder="Search formats" class="textbox autofocus" autocomplete="off"
 				onInput={this.updateSearch} onChange={this.updateSearch}
-			/> {}
-			<button onClick={this.toggleGen} value="gen9" class={`button button-first${curGen('gen9')}`}>Gen 9</button>
-			<button onClick={this.toggleGen} value="gen8" class={`button button-middle${curGen('gen8')}`}>8</button>
-			<button onClick={this.toggleGen} value="gen7" class={`button button-middle${curGen('gen7')}`}>7</button>
-			<button onClick={this.toggleGen} value="gen6" class={`button button-middle${curGen('gen6')}`}>6</button>
-			<button onClick={this.toggleGen} value="gen5" class={`button button-middle${curGen('gen5')}`}>5</button>
-			<button onClick={this.toggleGen} value="gen4" class={`button button-middle${curGen('gen4')}`}>4</button>
-			<button onClick={this.toggleGen} value="gen3" class={`button button-middle${curGen('gen3')}`}>3</button>
-			<button onClick={this.toggleGen} value="gen2" class={`button button-middle${curGen('gen2')}`}>2</button>
-			<button onClick={this.toggleGen} value="gen1" class={`button button-last${curGen('gen1')}`}>1</button>
+			/>
 		</div>;
 		if (!formatsLoaded) {
 			return <PSPanelWrapper room={room}><div class="pad">
@@ -470,6 +485,7 @@ class FormatDropdownPanel extends PSRoomPanel {
 		);
 		const curFormat = toID((room.parentElem as HTMLButtonElement).value);
 		const formats = Object.values(BattleFormats).filter(format => {
+			if (!toID(format.id).replace(/^gen\d/, '').startsWith('tcg')) return false;
 			if (selectType === 'challenge' && format.challengeShow === false) return false;
 			if (selectType === 'search' && format.searchShow === false) return false;
 			if (selectType === 'tournament' && format.tournamentShow === false) return false;
@@ -534,7 +550,7 @@ class FormatDropdownPanel extends PSRoomPanel {
 								searchShow: false,
 							} as any;
 						}
-						if (!format) return null;
+						if (!format || !toID(format.id).replace(/^gen\d/, '').startsWith('tcg')) return null;
 						if (i === starred.length - 1) starredDone = true;
 						if (selectType === 'challenge' && format.challengeShow === false) return null;
 						if (selectType === 'search' && format.searchShow === false) return null;
