@@ -243,20 +243,41 @@ export class TcgDeckEditor extends preact.Component<{
 						{results.map(c => {
 							const inDeck = ids.filter(x => x === c.id).length;
 							const max = copyMaxFor(c, format);
-							return <button
-								type="button"
+							return <div
 								key={c.id}
 								class={`tcg-deck-card${inDeck ? ' in-deck' : ''}`}
-								onClick={() => this.addCard(c.id)}
 								onMouseEnter={() => this.setState({ preview: c })}
 								title={`${c.n} (${c.set}${c.r ? ` · ${c.r}` : ''})`}
 							>
-								{c.i ? <img src={c.i} alt="" /> : <span class="tcg-deck-card-fallback">{c.n}</span>}
+								<button
+									type="button"
+									class="tcg-deck-card-art"
+									onClick={() => this.addCard(c.id)}
+								>
+									{c.i ? <img src={c.i} alt="" /> : <span class="tcg-deck-card-fallback">{c.n}</span>}
+								</button>
 								<span class="tcg-deck-card-meta">
 									<strong>{c.n}</strong>
-									<small>{c.set}{c.r ? ` · ${c.r}` : ''}{inDeck ? ` · ${inDeck}/${max}` : ''}</small>
+									<small>{c.set}{c.r ? ` · ${c.r}` : ''}</small>
 								</span>
-							</button>;
+								<div class="tcg-deck-card-qty">
+									<button
+										type="button"
+										class="tcg-deck-qty"
+										disabled={!inDeck}
+										onClick={ev => { ev.stopPropagation(); this.setQty(c.id, inDeck - 1); }}
+										aria-label={`Remove one ${c.n}`}
+									>−</button>
+									<span class="tcg-deck-qty-n">{inDeck}</span>
+									<button
+										type="button"
+										class="tcg-deck-qty"
+										disabled={inDeck >= max}
+										onClick={ev => { ev.stopPropagation(); this.addCard(c.id); }}
+										aria-label={`Add one ${c.n}`}
+									>+</button>
+								</div>
+							</div>;
 						})}
 						{!results.length && <p class="tcg-deck-empty">No cards match.</p>}
 					</div>

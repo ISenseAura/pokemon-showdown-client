@@ -64,7 +64,6 @@
 	border: 1px solid rgba(255, 255, 255, 0.1);
 	border-radius: 8px;
 	padding: 4px;
-	cursor: pointer;
 	color: inherit;
 	text-align: left;
 	transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
@@ -78,12 +77,26 @@
 	border-color: #34d399;
 	box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.4);
 }
+.tcg-deck-card-art {
+	display: block;
+	width: 100%;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	cursor: pointer;
+	border-radius: 4px;
+	color: inherit;
+}
+.tcg-deck-card-art:hover {
+	filter: brightness(1.05);
+}
 .tcg-deck-card img {
 	width: 100%;
 	aspect-ratio: 63 / 88;
 	object-fit: cover;
 	border-radius: 4px;
 	background: #0b1220;
+	display: block;
 }
 .tcg-deck-card-fallback {
 	display: flex;
@@ -100,7 +113,7 @@
 	display: flex;
 	flex-direction: column;
 	gap: 1px;
-	padding: 4px 2px 2px;
+	padding: 4px 2px 0;
 }
 .tcg-deck-card-meta strong {
 	font-size: 11px;
@@ -112,6 +125,40 @@
 .tcg-deck-card-meta small {
 	font-size: 10px;
 	opacity: 0.7;
+}
+.tcg-deck-card-qty {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	padding: 4px 0 2px;
+}
+.tcg-deck-card-qty .tcg-deck-qty {
+	width: 26px;
+	height: 26px;
+	font-size: 16px;
+	font-weight: 700;
+	border-radius: 6px;
+	border: 1px solid rgba(255, 255, 255, 0.25);
+	background: rgba(255, 255, 255, 0.1);
+	color: #e8eef8;
+	cursor: pointer;
+	line-height: 1;
+	padding: 0;
+}
+.tcg-deck-card-qty .tcg-deck-qty:hover:not(:disabled) {
+	background: #3b82f6;
+	border-color: #2563eb;
+}
+.tcg-deck-card-qty .tcg-deck-qty:disabled {
+	opacity: 0.35;
+	cursor: default;
+}
+.tcg-deck-card-qty .tcg-deck-qty-n {
+	min-width: 1.4em;
+	text-align: center;
+	font-weight: 800;
+	font-size: 13px;
 }
 
 .tcg-deck-preview {
