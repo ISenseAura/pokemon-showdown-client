@@ -250,6 +250,20 @@ function statusWord(s: string | null | undefined): string {
 	if (t === 'poisoned') return 'Poisoned';
 	return s || '';
 }
+/** Special Conditions as Showdown-style short badges (class = PS statbar colour). */
+function statusBadges(mon: TcgPokemonView): { id: string, label: string, title: string }[] {
+	const out: { id: string, label: string, title: string }[] = [];
+	const main = String(mon.status || '').toLowerCase();
+	if (main === 'asleep') out.push({ id: 'slp', label: 'SLP', title: 'Asleep' });
+	else if (main === 'paralyzed') out.push({ id: 'par', label: 'PAR', title: 'Paralyzed' });
+	else if (main === 'confused') out.push({ id: 'cnf', label: 'CNF', title: 'Confused' });
+	else if (main === 'poisoned') out.push({ id: 'psn', label: 'PSN', title: 'Poisoned' });
+	else if (main === 'burned') out.push({ id: 'brn', label: 'BRN', title: 'Burned' });
+	else if (main) out.push({ id: 'other', label: main.slice(0, 3).toUpperCase(), title: statusWord(main) });
+	if (mon.poisoned && main !== 'poisoned') out.push({ id: 'psn', label: 'PSN', title: 'Poisoned' });
+	if (mon.burned && main !== 'burned') out.push({ id: 'brn', label: 'BRN', title: 'Burned' });
+	return out;
+}
 function clusterSkip(t: string): boolean {
 	return t === 'request' || t === 'act' || t === 'coin' || t === 'damage' || t === 'heal' || t === 'status';
 }
@@ -1870,8 +1884,10 @@ class TcgMon extends preact.Component<{
 			<div class="tcg-energy-row">
 				{(mon.energy || []).map((t, i) => pip(t, i))}
 			</div>
-			{(mon.status || mon.poisoned || mon.burned) &&
-				<div class="tcg-status">{mon.status}{mon.poisoned ? ' PSN' : ''}{mon.burned ? ' BRN' : ''}</div>}
+			{statusBadges(mon).length > 0 &&
+				<div class="tcg-status">
+					{statusBadges(mon).map(b => <span key={b.id} class={b.id} title={b.title}>{b.label}</span>)}
+				</div>}
 			{pkFx?.element && <TypeHit type={pkFx.element} tick={pkFx.tick} />}
 			{dropHot && dropLabel && <em class="tcg-drop-tag">{dropLabel}</em>}
 		</div>;

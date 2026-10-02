@@ -1330,15 +1330,32 @@ span.tcg-card-backface {
 	border: 1.5px solid rgba(255, 255, 255, 0.55);
 	box-shadow: 0 0 5px rgba(0, 0, 0, 0.45), inset 0 1px 2px rgba(255, 255, 255, 0.35);
 }
+/* Special Conditions: Showdown statbar badges (same colours as .statbar span.psn etc.). */
 .tcg-mon .tcg-status {
 	position: absolute;
-	top: -8px;
+	top: -7px;
 	right: -4px;
-	font-size: 8px;
-	font-weight: 800;
-	color: #ffb347;
-	text-shadow: 0 1px 2px #000;
+	display: flex;
+	gap: 2px;
+	z-index: 3;
+	pointer-events: none;
 }
+.tcg-mon .tcg-status span {
+	display: inline-block;
+	padding: 1px 3px;
+	border-radius: 3px;
+	font: 800 8px/1.2 Verdana, Helvetica, Arial, sans-serif;
+	letter-spacing: 0.02em;
+	color: #fff;
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+	pointer-events: auto;
+}
+.tcg-mon .tcg-status .brn { background: #EE5533; }
+.tcg-mon .tcg-status .psn { background: #A4009A; }
+.tcg-mon .tcg-status .par { background: #9AA400; }
+.tcg-mon .tcg-status .slp { background: #AA77AA; }
+.tcg-mon .tcg-status .cnf { background: #A45200; }
+.tcg-mon .tcg-status .other { background: #555; }
 .tcg-float {
 	position: absolute;
 	top: 24px;
