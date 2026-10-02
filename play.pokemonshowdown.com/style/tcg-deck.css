@@ -1,8 +1,9 @@
 /* TCG deck builder */
 
 .tcg-deck-builder {
+	/* Deck composition first (left / top), card browser second. */
 	display: grid;
-	grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+	grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
 	gap: 12px;
 	min-height: calc(100vh - 160px);
 	padding: 0 8px 16px;
@@ -10,6 +11,12 @@
 }
 .tcg-deck-builder.narrow {
 	grid-template-columns: 1fr;
+}
+.tcg-deck-builder.narrow .tcg-deck-rail {
+	max-height: 42vh;
+}
+.tcg-deck-builder.narrow .tcg-deck-lists {
+	min-height: 0;
 }
 
 .tcg-deck-browser {
@@ -333,6 +340,9 @@
 @media (max-width: 700px) {
 	.tcg-deck-builder {
 		grid-template-columns: 1fr;
+	}
+	.tcg-deck-rail {
+		max-height: 42vh;
 	}
 	.tcg-deck-results {
 		grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));

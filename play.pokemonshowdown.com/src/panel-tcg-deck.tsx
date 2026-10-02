@@ -212,6 +212,57 @@ export class TcgDeckEditor extends preact.Component<{
 		const countCls = ids.length === rules.deckSize ? 'ok' : ids.length > rules.deckSize ? 'over' : 'short';
 
 		return <div class={`tcg-deck-builder${this.props.narrow ? ' narrow' : ''}`}>
+			{/* Your deck first: top when stacked, left on wide screens. */}
+			<aside class="tcg-deck-rail">
+				<div class="tcg-deck-rail-head">
+					<div class={`tcg-deck-count ${countCls}`}>{ids.length} / {rules.deckSize}</div>
+					<div class="tcg-deck-split">
+						<span>Pokémon {counts.pokemon}</span>
+						<span>Trainer {counts.trainer}</span>
+						<span>Energy {counts.energy}</span>
+					</div>
+					<label class="label">
+						Format
+						<select class="select" value={format} onChange={this.changeFormat}>
+							<option value="standard">Standard (60)</option>
+							<option value="pocket">Pocket (20)</option>
+						</select>
+					</label>
+				</div>
+
+				<div class="tcg-deck-lists">
+					{this.renderGroup('Pokémon', poke)}
+					{this.renderGroup('Trainer', train)}
+					{this.renderGroup('Energy', ener)}
+					{!lines.length && <p class="tcg-deck-empty">Your deck is empty. Use + on cards below to add them.</p>}
+				</div>
+
+				{format === 'standard' && <div class="tcg-deck-energy-quick">
+					<small>Basic Energy</small>
+					<div class="tcg-deck-chips">
+						{Object.keys(BASIC_ENERGY_IDS).map(t =>
+							<button type="button" class="button" onClick={() => this.addCard(BASIC_ENERGY_IDS[t])}>{t}</button>
+						)}
+					</div>
+				</div>}
+
+				<div class={`tcg-deck-legal${problems.length || serverErrors?.length ? ' bad' : ids.length === rules.deckSize ? ' good' : ''}`}>
+					{problems.length ? (
+						<ul>{problems.map(e => <li>{e}</li>)}</ul>
+					) : ids.length === rules.deckSize ? (
+						<p>Looks legal (client check).</p>
+					) : (
+						<p>Add {rules.deckSize - ids.length} more card{rules.deckSize - ids.length === 1 ? '' : 's'}.</p>
+					)}
+					{serverErrors && <ul class="tcg-deck-server">{serverErrors.map(e => <li>{e}</li>)}</ul>}
+					<p>
+						<button type="button" class="button" onClick={this.validate} disabled={validating}>
+							<i class="fa fa-check" aria-hidden></i> {validating ? 'Checking…' : 'Validate on server'}
+						</button>
+					</p>
+				</div>
+			</aside>
+
 			<div class="tcg-deck-browser">
 				<div class="tcg-deck-searchbar">
 					<input
@@ -314,56 +365,6 @@ export class TcgDeckEditor extends preact.Component<{
 					</div>
 				)}
 			</div>
-
-			<aside class="tcg-deck-rail">
-				<div class="tcg-deck-rail-head">
-					<label class="label">
-						Format
-						<select class="select" value={format} onChange={this.changeFormat}>
-							<option value="standard">Standard (60)</option>
-							<option value="pocket">Pocket (20)</option>
-						</select>
-					</label>
-					<div class={`tcg-deck-count ${countCls}`}>{ids.length} / {rules.deckSize}</div>
-					<div class="tcg-deck-split">
-						<span>Pokémon {counts.pokemon}</span>
-						<span>Trainer {counts.trainer}</span>
-						<span>Energy {counts.energy}</span>
-					</div>
-				</div>
-
-				{format === 'standard' && <div class="tcg-deck-energy-quick">
-					<small>Basic Energy</small>
-					<div class="tcg-deck-chips">
-						{Object.keys(BASIC_ENERGY_IDS).map(t =>
-							<button type="button" class="button" onClick={() => this.addCard(BASIC_ENERGY_IDS[t])}>{t}</button>
-						)}
-					</div>
-				</div>}
-
-				<div class="tcg-deck-lists">
-					{this.renderGroup('Pokémon', poke)}
-					{this.renderGroup('Trainer', train)}
-					{this.renderGroup('Energy', ener)}
-					{!lines.length && <p class="tcg-deck-empty">Your deck is empty. Click cards to add them.</p>}
-				</div>
-
-				<div class={`tcg-deck-legal${problems.length || serverErrors?.length ? ' bad' : ids.length === rules.deckSize ? ' good' : ''}`}>
-					{problems.length ? (
-						<ul>{problems.map(e => <li>{e}</li>)}</ul>
-					) : ids.length === rules.deckSize ? (
-						<p>Looks legal (client check).</p>
-					) : (
-						<p>Add {rules.deckSize - ids.length} more card{rules.deckSize - ids.length === 1 ? '' : 's'}.</p>
-					)}
-					{serverErrors && <ul class="tcg-deck-server">{serverErrors.map(e => <li>{e}</li>)}</ul>}
-					<p>
-						<button type="button" class="button" onClick={this.validate} disabled={validating}>
-							<i class="fa fa-check" aria-hidden></i> {validating ? 'Checking…' : 'Validate on server'}
-						</button>
-					</p>
-				</div>
-			</aside>
 		</div>;
 	}
 
