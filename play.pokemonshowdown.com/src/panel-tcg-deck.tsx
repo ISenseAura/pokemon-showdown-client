@@ -141,28 +141,6 @@ export class TcgDeckEditor extends preact.Component<{
 		this.setState({ preview: card });
 	};
 
-	changeFormat = (ev: Event) => {
-		const format = (ev.currentTarget as HTMLSelectElement).value as TcgDeckFormat;
-		if (format === this.state.format) return;
-		const rules = TCG_DECK_RULES[format];
-		const kept = this.state.ids.filter(id => {
-			const c = getTcgCard(id);
-			return c && cardLegalInFormat(c, format);
-		});
-		if (kept.length !== this.state.ids.length) {
-			const dropped = this.state.ids.length - kept.length;
-			if (!window.confirm(
-				`Switch to ${rules.name}? ${dropped} card${dropped === 1 ? '' : 's'} not legal in that format will be removed.`
-			)) {
-				(ev.currentTarget as HTMLSelectElement).value = this.state.format;
-				return;
-			}
-		}
-		const team = this.props.team;
-		team.format = showdownFormatFor(format) as any;
-		this.commit(kept, format);
-	};
-
 	onSearch = (ev: Event) => {
 		const q = (ev.currentTarget as HTMLInputElement).value;
 		if (this.searchTimer != null) window.clearTimeout(this.searchTimer);
@@ -215,19 +193,15 @@ export class TcgDeckEditor extends preact.Component<{
 			{/* Your deck first: top when stacked, left on wide screens. */}
 			<aside class="tcg-deck-rail">
 				<div class="tcg-deck-rail-head">
-					<div class={`tcg-deck-count ${countCls}`}>{ids.length} / {rules.deckSize}</div>
+					<div class={`tcg-deck-count ${countCls}`}>{ids.length}<small>/{rules.deckSize}</small></div>
 					<div class="tcg-deck-split">
 						<span>Pokémon {counts.pokemon}</span>
 						<span>Trainer {counts.trainer}</span>
 						<span>Energy {counts.energy}</span>
 					</div>
-					<label class="label">
-						Format
-						<select class="select" value={format} onChange={this.changeFormat}>
-							<option value="standard">Standard (60)</option>
-							<option value="pocket">Pocket (20)</option>
-						</select>
-					</label>
+					<button type="button" class="button tcg-deck-validate" onClick={this.validate} disabled={validating}>
+						<i class="fa fa-check" aria-hidden></i> {validating ? '…' : 'Validate'}
+					</button>
 				</div>
 
 				<div class="tcg-deck-lists">
@@ -246,21 +220,14 @@ export class TcgDeckEditor extends preact.Component<{
 					</div>
 				</div>}
 
-				<div class={`tcg-deck-legal${problems.length || serverErrors?.length ? ' bad' : ids.length === rules.deckSize ? ' good' : ''}`}>
-					{problems.length ? (
-						<ul>{problems.map(e => <li>{e}</li>)}</ul>
-					) : ids.length === rules.deckSize ? (
-						<p>Looks legal (client check).</p>
-					) : (
-						<p>Add {rules.deckSize - ids.length} more card{rules.deckSize - ids.length === 1 ? '' : 's'}.</p>
-					)}
-					{serverErrors && <ul class="tcg-deck-server">{serverErrors.map(e => <li>{e}</li>)}</ul>}
-					<p>
-						<button type="button" class="button" onClick={this.validate} disabled={validating}>
-							<i class="fa fa-check" aria-hidden></i> {validating ? 'Checking…' : 'Validate on server'}
-						</button>
-					</p>
-				</div>
+				{(problems.length > 0 || serverErrors?.length) && (
+					<div class="tcg-deck-legal bad">
+						<ul>
+							{problems.map(e => <li>{e}</li>)}
+							{serverErrors?.map(e => <li>{e}</li>)}
+						</ul>
+					</div>
+				)}
 			</aside>
 
 			<div class="tcg-deck-browser">
