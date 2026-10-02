@@ -1100,7 +1100,14 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 			return;
 		case 'request':
 			if (!args[1]) return;
-			this.applyTcgPayload(JSON.parse(args[1]), true);
+			try {
+				const data = JSON.parse(args[1]) as {
+					tcg?: boolean, events?: TcgEvent[], snapshot?: TcgSnapshot, wait?: boolean, actions?: TcgAction[],
+				};
+				// Slim |request| is timer-only (wait). Fat echoes from older servers still apply silently.
+				if (!data.events?.length && !data.snapshot) return;
+				this.applyTcgPayload(data, true);
+			} catch {}
 			return;
 		case 'player': {
 			// |player|p1|Name|avatar|rating|

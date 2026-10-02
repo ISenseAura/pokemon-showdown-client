@@ -237,10 +237,43 @@ export function applyTcgEvents(
 				}
 				if (e.type === 'draw' && e.n) p.deck = bumpPile(p.deck, -(Number(e.n) || 0));
 			}
+		} else if (e.type === 'deal') {
+			const counts = e.counts as [number, number] | undefined;
+			for (let seat = 0; seat < 2; seat++) {
+				const p = players[seat];
+				if (!p) continue;
+				const ids = (seat === 0 ? e.ids0 : e.ids1) as string[] | undefined;
+				const n = ids ? ids.length : (counts && counts[seat]) || 0;
+				if (ids && ids.length) setHand(p, ids.slice());
+				else p.hand = { count: n };
+				if (n) p.deck = bumpPile(p.deck, -n);
+			}
+		} else if (e.type === 'prizeSet') {
+			const counts = e.counts as [number, number] | undefined;
+			for (let seat = 0; seat < 2; seat++) {
+				const p = players[seat];
+				if (!p) continue;
+				const n = (counts && counts[seat]) || 0;
+				p.prizes = { count: n };
+				if (n) p.deck = bumpPile(p.deck, -n);
+			}
+		} else if (e.type === 'energyZone') {
+			const p = players[e.seat as number];
+			if (p) {
+				p.energyZone = {
+					type: String(e.energyType || e.zone || 'grass'),
+					next: e.next,
+					ready: !!e.ready,
+				};
+			}
 		} else if (e.type === 'place') {
 			const p = players[e.seat as number];
 			if (p) {
-				applyPlace(p, placeSlotOf(e), stubMon(e));
+				const hide = snap.status === 'setup' && (snap.you == null || e.seat !== snap.you);
+				const mon = hide ?
+					stubMon({ ...e, faceDown: true, name: 'Pokémon', cardId: '', hp: 0, maxHp: 0 }) :
+					stubMon(e);
+				applyPlace(p, placeSlotOf(e), mon);
 				if (p.setup && p.setup !== 'done' && !p.active) p.setup = 'active';
 				else if (p.setup === 'active') p.setup = 'bench';
 			}
@@ -254,7 +287,22 @@ export function applyTcgEvents(
 			}
 		} else if (e.type === 'ko') {
 			const p = players[e.seat as number];
-			if (p && e.iid) dropMonByIid(p, e.iid);
+			if (p && e.iid) {
+				const found = findMonSlot(players, e.iid);
+				if (found) {
+					if (!p.discard) p.discard = [];
+					if (found.mon.cardId) p.discard.push(found.mon.cardId);
+					const tools = found.mon.tools || [];
+					for (let t = 0; t < tools.length; t++) p.discard.push(tools[t]);
+				}
+				dropMonByIid(p, e.iid);
+			}
+		} else if (e.type === 'trainer') {
+			const p = players[e.seat as number];
+			if (p && e.cardId) {
+				if (!p.discard) p.discard = [];
+				p.discard.push(e.cardId);
+			}
 		} else if (e.type === 'stadium') {
 			const seat = e.seat as number;
 			for (let s = 0; s < players.length; s++) {
@@ -282,13 +330,25 @@ export function applyTcgEvents(
 			}
 		} else if (e.type === 'points') {
 			const p = players[e.seat as number];
-			if (p && e.total != null) p.points = Number(e.total);
+			if (p && e.total != null) {
+				p.points = Number(e.total);
+				if (snap.format?.energyZone && snap.format.prizes != null) {
+					p.prizes = { count: Math.max(0, Number(snap.format.prizes) - Number(e.total)) };
+				}
+			}
 		} else if (e.type === 'turn') {
 			if (e.seat != null) snap.turn = e.seat as number;
 			if (e.number != null) snap.turnNumber = Number(e.number);
 			if (snap.status === 'setup') snap.status = 'playing';
 			for (let s = 0; s < players.length; s++) {
-				if (players[s]) players[s].setup = 'done';
+				const p = players[s];
+				if (!p) continue;
+				p.setup = 'done';
+				if (p.active) p.active.faceDown = false;
+				const bench = p.bench || [];
+				for (let j = 0; j < bench.length; j++) {
+					if (bench[j]) bench[j].faceDown = false;
+				}
 			}
 		} else if (e.type === 'first') {
 			if (e.chooses) snap.pendingFirst = e.seat as number;
@@ -306,6 +366,9 @@ export function applyTcgEvents(
 					removeHandIndex(p, action.hand);
 				}
 				if (action.type === 'setupDone') p.setup = 'done';
+				if (action.type === 'attachZone' && p.energyZone) {
+					p.energyZone = { ...p.energyZone, ready: false };
+				}
 				if (action.type === 'payEnergy' && typeof action.index === 'number') {
 					payEnergyAt(p, action.index);
 				}
@@ -1767,6 +1830,7 @@ function prizesLeft(p: TcgPlayerView, need: number, status?: string): number {
 	return status === 'setup' && !n ? need : n;
 }
 function scoredPoints(p: TcgPlayerView, need: number, status?: string): number {
+	if (typeof p.points === 'number') return p.points;
 	return Math.max(0, need - prizesLeft(p, need, status));
 }
 
@@ -1826,6 +1890,7 @@ export function describeAction(a: TcgAction, snap: TcgSnapshot): string {
 	case 'playStadium': return `Stadium ${cardAt(a.hand)}`;
 	case 'useStadium': return 'Use Stadium';
 	case 'ability': {
+		if (a.name) return a.name;
 		const mon = a.slot === 'active' ? me?.active : me?.bench?.[Number(a.slot)];
 		const ab = mon?.abilities?.[a.index];
 		return ab?.name || `Ability ${slotName(a.slot)}`;
@@ -1833,6 +1898,7 @@ export function describeAction(a: TcgAction, snap: TcgSnapshot): string {
 	case 'retreat': return `Retreat → ${monAt(a.bench)}`;
 	case 'payEnergy': return 'Discard Energy';
 	case 'attack': {
+		if (a.name) return a.name;
 		const atk = me?.active?.attacks?.[a.index];
 		return atk?.name || `Attack ${(a.index ?? 0) + 1}`;
 	}
@@ -3716,7 +3782,9 @@ export class TcgBoard extends preact.Component<{
 						<div class="tcg-action-list">
 							{menu.map((a, i) => {
 								if (a.type === 'attack') {
-									const atk = me.active?.attacks?.[a.index];
+									const atk = a.name || a.cost || a.damage ?
+										{ name: a.name, cost: a.cost, damage: a.damage } :
+										me.active?.attacks?.[a.index];
 									return <button type="button" key={i} class="tcg-atk" onClick={() => this.pickMenuAction(a)}>
 										<span class="tcg-atk-cost">{(atk?.cost || []).map((t, j) => pip(t, j))}</span>
 										<span class="tcg-atk-name">{atk?.name || `Attack ${(a.index ?? 0) + 1}`}</span>
