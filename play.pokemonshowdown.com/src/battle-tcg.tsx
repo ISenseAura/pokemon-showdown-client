@@ -104,30 +104,73 @@ function removeHandIndex(p: TcgPlayerView, index: number) {
 	}
 }
 
-function removeHandCardId(p: TcgPlayerView, cardId?: string) {
-	if (!cardId) return;
-	const ids = handAsIds(p.hand);
-	if (!ids) {
-		if (!Array.isArray(p.hand) && p.hand && typeof p.hand.count === 'number' && p.hand.count > 0) {
-			p.hand = { count: p.hand.count - 1 };
-		}
-		return;
-	}
-	const i = ids.indexOf(cardId);
-	if (i >= 0) {
-		ids.splice(i, 1);
-		setHand(p, ids);
-	}
-}
-
 function bumpPile(pile: { count: number } | undefined, delta: number): { count: number } {
 	return { count: Math.max(0, (pile?.count || 0) + delta) };
 }
 
+function stubMon(e: TcgEvent): TcgPokemonView {
+	const hp = e.hp != null ? Number(e.hp) : 0;
+	return {
+		iid: e.iid,
+		cardId: e.cardId || '',
+		name: e.name || e.cardId || 'Pokémon',
+		hp,
+		maxHp: e.maxHp != null ? Number(e.maxHp) : hp,
+		energy: [],
+		tools: [],
+		faceDown: !!e.faceDown,
+	};
+}
+
+function applyPlace(p: TcgPlayerView, slot: TcgSlot, mon: TcgPokemonView) {
+	const fromBench = (p.bench || []).findIndex(m => m && m.iid === mon.iid);
+	const oldActive = p.active && p.active.iid !== mon.iid ? p.active : null;
+	dropMonByIid(p, mon.iid);
+	if (slot === 'active') {
+		p.active = mon;
+		if (oldActive) {
+			if (fromBench >= 0) p.bench.splice(fromBench, 0, oldActive);
+			else p.bench.push(oldActive);
+		}
+		return;
+	}
+	const i = Number(slot);
+	if (!Number.isFinite(i) || i < 0 || i >= p.bench.length) p.bench.push(mon);
+	else p.bench.splice(i, 0, mon);
+}
+
+function dropMonByIid(p: TcgPlayerView, iid: string) {
+	if (p.active?.iid === iid) p.active = null;
+	const bench = p.bench || [];
+	const next: TcgPokemonView[] = [];
+	for (let j = 0; j < bench.length; j++) {
+		if (bench[j] && bench[j].iid !== iid) next.push(bench[j]);
+	}
+	p.bench = next;
+}
+
+function payEnergyAt(p: TcgPlayerView, index: number) {
+	if (!p.active?.energy || index < 0) return;
+	const next: string[] = [];
+	for (let j = 0; j < p.active.energy.length; j++) {
+		if (j !== index) next.push(p.active.energy[j]);
+	}
+	p.active.energy = next;
+}
+
+function clearPending(snap: TcgSnapshot) {
+	delete snap.pendingSearch;
+	delete snap.pendingDiscard;
+	delete snap.pendingRetreatPay;
+	delete snap.pendingConfirm;
+	delete snap.pendingPromote;
+	delete snap.pendingFirst;
+	delete snap.pendingPrize;
+}
+
 /**
- * Apply a soft event batch onto a prior snapshot when the server omitted a full board.
- * Structural changes (place/evolve/ko/turn/…) still arrive with a snapshot; this covers
- * attach / damage / draw / status style mid-turn updates plus the new `actions` list.
+ * Apply a TcgEvent batch onto a prior snapshot when the server omitted a full board.
+ * Same idea as Showdown's battle.ts: each event mutates local state.
  */
 export function applyTcgEvents(
 	base: TcgSnapshot,
@@ -172,7 +215,6 @@ export function applyTcgEvents(
 				const found = findMonSlot(players, e.iid);
 				if (found) {
 					found.mon.energy = [...(found.mon.energy || []), energyTypeFromCardId(e.cardId)];
-					if (players[found.seat]) removeHandCardId(players[found.seat], e.cardId);
 				}
 			}
 		} else if (e.type === 'tool') {
@@ -180,11 +222,8 @@ export function applyTcgEvents(
 				const found = findMonSlot(players, e.iid);
 				if (found) {
 					found.mon.tools = [...(found.mon.tools || []), e.cardId || 'tool'];
-					if (players[found.seat]) removeHandCardId(players[found.seat], e.cardId);
 				}
 			}
-		} else if (e.type === 'trainer') {
-			if (e.seat != null && players[e.seat]) removeHandCardId(players[e.seat], e.cardId);
 		} else if (e.type === 'draw' || e.type === 'find') {
 			const seat = e.seat as number;
 			const p = players[seat];
@@ -198,6 +237,62 @@ export function applyTcgEvents(
 				}
 				if (e.type === 'draw' && e.n) p.deck = bumpPile(p.deck, -(Number(e.n) || 0));
 			}
+		} else if (e.type === 'place') {
+			const p = players[e.seat as number];
+			if (p) {
+				applyPlace(p, placeSlotOf(e), stubMon(e));
+				if (p.setup && p.setup !== 'done' && !p.active) p.setup = 'active';
+				else if (p.setup === 'active') p.setup = 'bench';
+			}
+		} else if (e.type === 'evolve') {
+			const found = findMonSlot(players, e.iid);
+			if (found) {
+				found.mon.cardId = e.cardId || found.mon.cardId;
+				if (e.name) found.mon.name = e.name;
+				if (e.hp != null) found.mon.hp = Number(e.hp);
+				if (e.maxHp != null) found.mon.maxHp = Number(e.maxHp);
+			}
+		} else if (e.type === 'ko') {
+			const p = players[e.seat as number];
+			if (p && e.iid) dropMonByIid(p, e.iid);
+		} else if (e.type === 'stadium') {
+			const seat = e.seat as number;
+			for (let s = 0; s < players.length; s++) {
+				if (!players[s]) continue;
+				players[s].stadium = s === seat ? (e.cardId || null) : null;
+			}
+		} else if (e.type === 'stadiumEnd') {
+			for (let s = 0; s < players.length; s++) {
+				if (players[s]) players[s].stadium = null;
+			}
+		} else if (e.type === 'prize') {
+			snap.pendingPrize = { seat: e.seat as number, n: Number(e.n) || 1 };
+		} else if (e.type === 'prizeTake') {
+			const p = players[e.seat as number];
+			if (p?.prizes) p.prizes = bumpPile(p.prizes, -1);
+			if (p && e.ids?.length) {
+				const hand = handAsIds(p.hand) || [];
+				setHand(p, hand.concat(e.ids));
+			} else if (p && !Array.isArray(p.hand) && p.hand) {
+				p.hand = bumpPile(p.hand as { count: number }, 1);
+			}
+			if (snap.pendingPrize && snap.pendingPrize.seat === e.seat) {
+				snap.pendingPrize = { ...snap.pendingPrize, n: Math.max(0, snap.pendingPrize.n - 1) };
+				if (snap.pendingPrize.n <= 0) delete snap.pendingPrize;
+			}
+		} else if (e.type === 'points') {
+			const p = players[e.seat as number];
+			if (p && e.total != null) p.points = Number(e.total);
+		} else if (e.type === 'turn') {
+			if (e.seat != null) snap.turn = e.seat as number;
+			if (e.number != null) snap.turnNumber = Number(e.number);
+			if (snap.status === 'setup') snap.status = 'playing';
+			for (let s = 0; s < players.length; s++) {
+				if (players[s]) players[s].setup = 'done';
+			}
+		} else if (e.type === 'first') {
+			if (e.chooses) snap.pendingFirst = e.seat as number;
+			else delete snap.pendingFirst;
 		} else if (e.type === 'act') {
 			const seat = e.seat as number;
 			const p = players[seat];
@@ -205,27 +300,50 @@ export function applyTcgEvents(
 			if (p && action) {
 				const handTypes = [
 					'setActive', 'setBench', 'playBasic', 'evolve', 'attachEnergy', 'attachTool',
-					'playTrainer', 'playStadium',
+					'playTrainer', 'playStadium', 'mulliganBench',
 				];
 				if (handTypes.includes(action.type) && typeof action.hand === 'number') {
 					removeHandIndex(p, action.hand);
 				}
+				if (action.type === 'setupDone') p.setup = 'done';
+				if (action.type === 'payEnergy' && typeof action.index === 'number') {
+					payEnergyAt(p, action.index);
+				}
+				if (action.type === 'discardPick' && typeof action.hand === 'number') {
+					removeHandIndex(p, action.hand);
+				}
 			}
 		} else if (e.type === 'request') {
-			// Soft batches only carry request.kind === "turn"; clear prompt leftovers.
-			if (e.kind === 'turn') {
-				delete snap.pendingSearch;
-				delete snap.pendingDiscard;
-				delete snap.pendingRetreatPay;
-				delete snap.pendingConfirm;
-				delete snap.pendingPromote;
-				delete snap.pendingFirst;
-				delete snap.pendingPrize;
+			clearPending(snap);
+			const kind = String(e.kind || '');
+			if (kind === 'search') {
+				snap.pendingSearch = {
+					kind: e.searchKind, left: e.left, upTo: e.upTo, zone: e.zone, dest: e.dest,
+				};
+			} else if (kind === 'discard' && e.need != null) {
+				snap.pendingDiscard = { need: Number(e.need) };
+			} else if (kind === 'retreatPay' && e.need != null) {
+				snap.pendingRetreatPay = { need: Number(e.need) };
+			} else if (kind === 'confirm') {
+				snap.pendingConfirm = { title: e.title, text: e.text };
+			} else if (kind === 'promote' || kind === 'switch') {
+				snap.pendingPromote = e.promote != null ? Number(e.promote) : (e.waiting?.[0] as number);
+			} else if (kind === 'first') {
+				snap.pendingFirst = e.waiting?.[0] as number;
+			} else if (kind === 'prize') {
+				snap.pendingPrize = {
+					seat: e.prizeSeat != null ? Number(e.prizeSeat) : Number(e.waiting?.[0] || 0),
+					n: Number(e.n) || 1,
+				};
 			}
+			if (kind === 'over') snap.status = 'over';
+			if (kind === 'setup') snap.status = 'setup';
+			if (kind === 'turn' && snap.status === 'setup') snap.status = 'playing';
 		} else if (e.type === 'over') {
 			snap.status = 'over';
 			if (e.winner !== undefined) snap.winner = e.winner;
 			if (e.reason) snap.winReason = e.reason;
+			clearPending(snap);
 		}
 	}
 	if (actions) snap.actions = actions;
