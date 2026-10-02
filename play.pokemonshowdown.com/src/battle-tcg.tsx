@@ -6,6 +6,7 @@
 
 import preact from "../js/lib/preact";
 import { PS } from "./client-main";
+import { Net } from "./client-connection";
 import { getTcgCard, loadTcgCardIndex } from "./battle-tcg-deck";
 
 export function isTcgBattleId(id: string): boolean {
@@ -166,7 +167,7 @@ function handAsIds(hand: TcgPlayerView['hand']): string[] | null {
  */
 function handFan(
 	committed: string[] | null,
-	viewHand: TcgPlayerView['hand'] | undefined,
+	viewHand: TcgPlayerView['hand'] | undefined
 ): { id: string, i: number, arrive: boolean }[] | null {
 	const viewIds = handAsIds(viewHand ?? null);
 	if (!committed) {
@@ -265,10 +266,9 @@ function applyPlace(p: TcgPlayerView, slot: TcgSlot, mon: TcgPokemonView) {
 
 function dropMonByIid(p: TcgPlayerView, iid: string) {
 	if (p.active?.iid === iid) p.active = null;
-	const bench = p.bench || [];
 	const next: TcgPokemonView[] = [];
-	for (let j = 0; j < bench.length; j++) {
-		if (bench[j] && bench[j].iid !== iid) next.push(bench[j]);
+	for (const mon of p.bench || []) {
+		if (mon && mon.iid !== iid) next.push(mon);
 	}
 	p.bench = next;
 }
@@ -294,18 +294,19 @@ function clearPending(snap: TcgSnapshot) {
 
 /**
  * Apply a TcgEvent batch onto a prior snapshot when the server omitted a full board.
- * Same idea as Showdown's battle.ts: each event mutates local state.
  */
 function laterCoversDiscard(events: TcgEvent[], index: number, ids: string[], iid?: string): boolean {
-	const want = new Set(ids.filter(Boolean));
-	if (!want.size && !iid) return false;
+	const want: { [id: string]: 1 } = Object.create(null);
+	for (const id of ids) if (id) want[id] = 1;
+	const listed = !!ids.filter(Boolean).length;
+	if (!listed && !iid) return false;
 	for (let j = index + 1; j < events.length; j++) {
 		const n = events[j];
 		if (!n || n.type === 'request' || n.type === 'turn') break;
 		if (n.type !== 'toDiscard') continue;
 		if (iid && n.iid === iid) return true;
 		const got = Array.isArray(n.ids) ? n.ids as string[] : [];
-		if (got.some(id => want.has(id))) return true;
+		if (got.some(id => want[id])) return true;
 	}
 	return false;
 }
@@ -317,7 +318,7 @@ function applyBatchEvent(snap: TcgSnapshot, events: TcgEvent[], index: number) {
 	if (e.type === 'ko' && e.iid) {
 		const found = findMonSlot(snap.players || [], e.iid);
 		const cards = found ?
-			[found.mon.cardId, ...(found.mon.energyCards || []), ...(found.mon.tools || [])].filter(Boolean) as string[] :
+			[found.mon.cardId, ...(found.mon.energyCards || []), ...(found.mon.tools || [])].filter(Boolean) :
 			[];
 		const seat = e.seat as number;
 		applyTcgEvent(snap, e);
@@ -345,7 +346,7 @@ function applyBatchEvent(snap: TcgSnapshot, events: TcgEvent[], index: number) {
 export function applyTcgEvents(
 	base: TcgSnapshot,
 	events: TcgEvent[] | undefined,
-	actions?: TcgAction[],
+	actions?: TcgAction[]
 ): TcgSnapshot {
 	const snap = cloneTcgSnapshot(base);
 	const list = events || [];
@@ -360,267 +361,281 @@ export function applyTcgEvent(snap: TcgSnapshot, e: TcgEvent) {
 	const players = snap.players || [];
 	if (!e) return;
 	if (e.type === 'damage' || e.type === 'heal') {
-			if (e.iid != null && e.hp != null) {
-				const found = findMonSlot(players, e.iid);
-				if (found) {
-					found.mon.hp = Number(e.hp);
-					if (e.amount != null) {
-						found.mon.lastDelta = e.type === 'damage' ? -Number(e.amount) : Number(e.amount);
-					}
-				}
-			}
-		} else if (e.type === 'status') {
-			if (e.iid != null) {
-				const found = findMonSlot(players, e.iid);
-				if (found) {
-					const s = e.status == null || e.status === '' ? null : String(e.status).toLowerCase();
-					if (e.poisoned != null || e.burned != null) {
-						found.mon.status = s;
-						found.mon.poisoned = !!e.poisoned || s === 'poisoned';
-						found.mon.burned = !!e.burned || s === 'burned';
-					} else if (s === 'poisoned') {
-						found.mon.poisoned = true;
-					} else if (s === 'burned') {
-						found.mon.burned = true;
-					} else if (s == null) {
-						found.mon.status = null;
-						found.mon.poisoned = false;
-						found.mon.burned = false;
-					} else {
-						found.mon.status = s;
-					}
-				}
-			}
-		} else if (e.type === 'energy') {
-			if (e.iid) {
-				const found = findMonSlot(players, e.iid);
-				if (found) {
-					if (e.cardId) {
-						found.mon.energyCards = [...(found.mon.energyCards || []), e.cardId];
-					}
-					found.mon.energy = [...(found.mon.energy || []), ...energyPipsFromEvent(e)];
-					if (players[found.seat]) players[found.seat].attachedEnergyThisTurn = true;
-				}
-			}
-		} else if (e.type === 'tool') {
-			if (e.iid) {
-				const found = findMonSlot(players, e.iid);
-				if (found) {
-					found.mon.tools = [...(found.mon.tools || []), e.cardId || 'tool'];
-				}
-			}
-		} else if (e.type === 'draw' || e.type === 'find') {
-			const seat = e.seat as number;
-			const p = players[seat];
-			if (p) {
-				const ids = e.ids as string[] | undefined;
-				if (ids?.length) {
-					const hand = handAsIds(p.hand) || [];
-					setHand(p, hand.concat(ids));
-				} else if (!Array.isArray(p.hand) && p.hand) {
-					const n = e.type === 'draw' ? (Number(e.n) || 0) : Math.max(1, ids?.length || Number(e.n) || 1);
-					if (n) p.hand = bumpPile(p.hand as { count: number }, n);
-				}
-				if (e.type === 'draw' && e.n) p.deck = bumpPile(p.deck, -(Number(e.n) || 0));
-			}
-		} else if (e.type === 'deal') {
-			const counts = e.counts as [number, number] | undefined;
-			for (let seat = 0; seat < 2; seat++) {
-				const p = players[seat];
-				if (!p) continue;
-				const ids = (seat === 0 ? e.ids0 : e.ids1) as string[] | undefined;
-				const n = ids ? ids.length : (counts && counts[seat]) || 0;
-				if (ids && ids.length) setHand(p, ids.slice());
-				else p.hand = { count: n };
-				if (n) p.deck = bumpPile(p.deck, -n);
-			}
-		} else if (e.type === 'prizeSet') {
-			const counts = e.counts as [number, number] | undefined;
-			for (let seat = 0; seat < 2; seat++) {
-				const p = players[seat];
-				if (!p) continue;
-				const n = (counts && counts[seat]) || 0;
-				p.prizes = { count: n };
-				if (n) p.deck = bumpPile(p.deck, -n);
-			}
-		} else if (e.type === 'energyZone') {
-			const p = players[e.seat as number];
-			if (p) {
-				p.energyZone = {
-					type: String(e.energyType || e.zone || 'grass'),
-					next: e.next,
-					ready: !!e.ready,
-				};
-			}
-		} else if (e.type === 'place') {
-			const p = players[e.seat as number];
-			if (p) {
-				const existing = findMonSlot(players, e.iid)?.mon;
-				const hide = !existing && snap.status === 'setup' && (snap.you == null || e.seat !== snap.you);
-				const mon = existing || (hide ?
-					stubMon({ ...e, faceDown: true, name: 'Pokémon', cardId: '', hp: 0, maxHp: 0 }) :
-					stubMon(e));
-				if (existing) {
-					if (e.hp != null) existing.hp = Number(e.hp);
-					if (e.maxHp != null) existing.maxHp = Number(e.maxHp);
-					if (e.name) existing.name = e.name;
-				}
-				applyPlace(p, placeSlotOf(e), mon);
-				if (p.setup && p.setup !== 'done' && !p.active) p.setup = 'active';
-				else if (p.setup === 'active') p.setup = 'bench';
-			}
-		} else if (e.type === 'evolve') {
+		if (e.iid != null && e.hp != null) {
 			const found = findMonSlot(players, e.iid);
 			if (found) {
-				found.mon.cardId = e.cardId || found.mon.cardId;
-				if (e.name) found.mon.name = e.name;
-				if (e.hp != null) found.mon.hp = Number(e.hp);
-				if (e.maxHp != null) found.mon.maxHp = Number(e.maxHp);
-			}
-		} else if (e.type === 'ko') {
-			const p = players[e.seat as number];
-			if (p && e.iid) dropMonByIid(p, e.iid);
-		} else if (e.type === 'shuffle') {
-			const p = players[e.seat as number];
-			if (p) {
-				if (e.from === 'hand') setHand(p, Array.isArray(p.hand) ? [] : { count: 0 });
-				if (e.deck != null) p.deck = { count: Number(e.deck) };
-			}
-		} else if (e.type === 'toDiscard') {
-			const p = players[e.seat as number];
-			const ids = Array.isArray(e.ids) ? e.ids.filter(Boolean) as string[] : [];
-			if (p && ids.length) {
-				if (e.from === 'hand') removeHandIds(p, ids);
-				if (e.from === 'deck') p.deck = bumpPile(p.deck, -ids.length);
-				if (e.iid) {
-					const found = findMonSlot(players, e.iid);
-					if (found) detachPlayedCards(found.mon, ids);
-				}
-				if (!p.discard) p.discard = [];
-				for (const id of ids) p.discard.push(id);
-			}
-		} else if (e.type === 'toLost') {
-			const p = players[e.seat as number];
-			if (p) p.lostZone = bumpPile(p.lostZone, Number(e.n) || 0);
-		} else if (e.type === 'trainer') {
-			const p = players[e.seat as number];
-			if (p && e.cardId && cardKind(e.cardId).supporter) p.playedSupporterThisTurn = true;
-		} else if (e.type === 'stadium') {
-			const seat = e.seat as number;
-			for (let s = 0; s < players.length; s++) {
-				if (!players[s]) continue;
-				players[s].stadium = s === seat ? (e.cardId || null) : null;
-				if (s === seat) players[s].playedStadiumThisTurn = true;
-			}
-		} else if (e.type === 'stadiumEnd') {
-			for (let s = 0; s < players.length; s++) {
-				if (players[s]) players[s].stadium = null;
-			}
-		} else if (e.type === 'prize') {
-			snap.pendingPrize = { seat: e.seat as number, n: Number(e.n) || 1 };
-		} else if (e.type === 'prizeTake') {
-			const p = players[e.seat as number];
-			if (p?.prizes) p.prizes = bumpPile(p.prizes, -1);
-			if (p && e.ids?.length) {
-				const hand = handAsIds(p.hand) || [];
-				setHand(p, hand.concat(e.ids));
-			} else if (p && !Array.isArray(p.hand) && p.hand) {
-				p.hand = bumpPile(p.hand as { count: number }, 1);
-			}
-			if (snap.pendingPrize && snap.pendingPrize.seat === e.seat) {
-				snap.pendingPrize = { ...snap.pendingPrize, n: Math.max(0, snap.pendingPrize.n - 1) };
-				if (snap.pendingPrize.n <= 0) delete snap.pendingPrize;
-			}
-		} else if (e.type === 'points') {
-			const p = players[e.seat as number];
-			if (p && e.total != null) {
-				p.points = Number(e.total);
-				if (snap.format?.energyZone && snap.format.prizes != null) {
-					p.prizes = { count: Math.max(0, Number(snap.format.prizes) - Number(e.total)) };
+				found.mon.hp = Number(e.hp);
+				if (e.amount != null) {
+					found.mon.lastDelta = e.type === 'damage' ? -Number(e.amount) : Number(e.amount);
 				}
 			}
-		} else if (e.type === 'turn') {
-			if (e.seat != null) snap.turn = e.seat as number;
-			if (e.number != null) snap.turnNumber = Number(e.number);
-			if (snap.status === 'setup') snap.status = 'playing';
-			for (let s = 0; s < players.length; s++) {
-				const p = players[s];
-				if (!p) continue;
-				p.setup = 'done';
-				p.attachedEnergyThisTurn = false;
-				p.playedSupporterThisTurn = false;
-				p.playedStadiumThisTurn = false;
-				p.retreatedThisTurn = false;
-				if (p.active) p.active.faceDown = false;
-				const bench = p.bench || [];
-				for (let j = 0; j < bench.length; j++) {
-					if (bench[j]) bench[j].faceDown = false;
-				}
-			}
-		} else if (e.type === 'first') {
-			if (e.chooses) snap.pendingFirst = e.seat as number;
-			else delete snap.pendingFirst;
-		} else if (e.type === 'act') {
-			const seat = e.seat as number;
-			const p = players[seat];
-			const action = e.action as TcgAction | undefined;
-			if (p && action) {
-				const handTypes = [
-					'setActive', 'setBench', 'playBasic', 'evolve', 'attachEnergy', 'attachTool',
-					'playTrainer', 'playStadium', 'mulliganBench',
-				];
-				if (handTypes.includes(action.type) && typeof action.hand === 'number') {
-					removeHandIndex(p, action.hand);
-				}
-				if (action.type === 'setupDone') p.setup = 'done';
-				if (action.type === 'attachZone' && p.energyZone) {
-					p.energyZone = { ...p.energyZone, ready: false };
-					p.attachedEnergyThisTurn = true;
-				}
-				if (action.type === 'attachEnergy') p.attachedEnergyThisTurn = true;
-				if (action.type === 'retreat') p.retreatedThisTurn = true;
-				if (action.type === 'playStadium') p.playedStadiumThisTurn = true;
-				if (action.type === 'payEnergy' && typeof action.index === 'number') {
-					payEnergyAt(p, action.index);
-				}
-				if (action.type === 'discardPick' && typeof action.hand === 'number') {
-					removeHandIndex(p, action.hand);
-				}
-			}
-		} else if (e.type === 'request') {
-			clearPending(snap);
-			const kind = String(e.kind || '');
-			const waiting = Array.isArray(e.waiting) ? e.waiting : [];
-			const forYou = snap.you != null && waiting.some((seat: number) => seat === snap.you);
-			if (forYou && kind === 'search') {
-				snap.pendingSearch = {
-					kind: e.searchKind, left: e.left, upTo: e.upTo, zone: e.zone, dest: e.dest,
-				};
-			} else if (forYou && kind === 'discard' && e.need != null) {
-				snap.pendingDiscard = { need: Number(e.need) };
-			} else if (forYou && kind === 'retreatPay' && e.need != null) {
-				snap.pendingRetreatPay = { need: Number(e.need) };
-			} else if (forYou && kind === 'confirm') {
-				snap.pendingConfirm = { title: e.title, text: e.text };
-			} else if (kind === 'promote' || kind === 'switch') {
-				snap.pendingPromote = e.promote != null ? Number(e.promote) : (e.waiting?.[0] as number);
-			} else if (kind === 'first') {
-				snap.pendingFirst = e.waiting?.[0] as number;
-			} else if (kind === 'prize') {
-				snap.pendingPrize = {
-					seat: e.prizeSeat != null ? Number(e.prizeSeat) : Number(e.waiting?.[0] || 0),
-					n: Number(e.n) || 1,
-				};
-			}
-			if (kind === 'over') snap.status = 'over';
-			if (kind === 'setup') snap.status = 'setup';
-			if (kind === 'turn' && snap.status === 'setup') snap.status = 'playing';
-		} else if (e.type === 'over') {
-			snap.status = 'over';
-			if (e.winner !== undefined) snap.winner = e.winner;
-			if (e.reason) snap.winReason = e.reason;
-			clearPending(snap);
 		}
+	} else if (e.type === 'status') {
+		if (e.iid != null) {
+			const found = findMonSlot(players, e.iid);
+			if (found) {
+				const s = e.status == null || e.status === '' ? null : String(e.status).toLowerCase();
+				if (e.poisoned != null || e.burned != null) {
+					found.mon.status = s;
+					found.mon.poisoned = !!e.poisoned || s === 'poisoned';
+					found.mon.burned = !!e.burned || s === 'burned';
+				} else if (s === 'poisoned') {
+					found.mon.poisoned = true;
+				} else if (s === 'burned') {
+					found.mon.burned = true;
+				} else if (s == null) {
+					found.mon.status = null;
+					found.mon.poisoned = false;
+					found.mon.burned = false;
+				} else {
+					found.mon.status = s;
+				}
+			}
+		}
+	} else if (e.type === 'energy') {
+		if (e.iid) {
+			const found = findMonSlot(players, e.iid);
+			if (found) {
+				if (e.cardId) {
+					found.mon.energyCards = [...(found.mon.energyCards || []), e.cardId];
+				}
+				found.mon.energy = [...(found.mon.energy || []), ...energyPipsFromEvent(e)];
+				if (players[found.seat]) players[found.seat].attachedEnergyThisTurn = true;
+			}
+		}
+	} else if (e.type === 'tool') {
+		if (e.iid) {
+			const found = findMonSlot(players, e.iid);
+			if (found) {
+				found.mon.tools = [...(found.mon.tools || []), e.cardId || 'tool'];
+			}
+		}
+	} else if (e.type === 'draw' || e.type === 'find') {
+		const seat = e.seat as number;
+		const p = players[seat];
+		if (p) {
+			const ids = e.ids as string[] | undefined;
+			if (ids?.length) {
+				const hand = handAsIds(p.hand) || [];
+				setHand(p, hand.concat(ids));
+			} else if (!Array.isArray(p.hand) && p.hand) {
+				const n = e.type === 'draw' ? (Number(e.n) || 0) : Math.max(1, ids?.length || Number(e.n) || 1);
+				if (n) p.hand = bumpPile(p.hand as { count: number }, n);
+			}
+			if (e.type === 'draw' && e.n) p.deck = bumpPile(p.deck, -(Number(e.n) || 0));
+		}
+	} else if (e.type === 'deal') {
+		const counts = e.counts as [number, number] | undefined;
+		for (let seat = 0; seat < 2; seat++) {
+			const p = players[seat];
+			if (!p) continue;
+			const ids = (seat === 0 ? e.ids0 : e.ids1) as string[] | undefined;
+			const n = ids ? ids.length : (counts?.[seat]) || 0;
+			if (ids?.length) setHand(p, ids.slice());
+			else p.hand = { count: n };
+			if (n) p.deck = bumpPile(p.deck, -n);
+		}
+	} else if (e.type === 'prizeSet') {
+		const counts = e.counts as [number, number] | undefined;
+		for (let seat = 0; seat < 2; seat++) {
+			const p = players[seat];
+			if (!p) continue;
+			const n = (counts?.[seat]) || 0;
+			p.prizes = { count: n };
+			if (n) p.deck = bumpPile(p.deck, -n);
+		}
+	} else if (e.type === 'energyZone') {
+		const p = players[e.seat as number];
+		if (p) {
+			p.energyZone = {
+				type: String(e.energyType || e.zone || 'grass'),
+				next: e.next,
+				ready: !!e.ready,
+			};
+		}
+	} else if (e.type === 'place') {
+		const p = players[e.seat as number];
+		if (p) {
+			const existing = findMonSlot(players, e.iid)?.mon;
+			const hide = !existing && snap.status === 'setup' && (snap.you == null || e.seat !== snap.you);
+			const mon = existing || (hide ?
+				stubMon({ ...e, faceDown: true, name: 'Pokémon', cardId: '', hp: 0, maxHp: 0 }) :
+				stubMon(e));
+			if (existing) {
+				if (e.hp != null) existing.hp = Number(e.hp);
+				if (e.maxHp != null) existing.maxHp = Number(e.maxHp);
+				if (e.name) existing.name = e.name;
+			}
+			applyPlace(p, placeSlotOf(e), mon);
+			if (p.setup && p.setup !== 'done' && !p.active) p.setup = 'active';
+			else if (p.setup === 'active') p.setup = 'bench';
+		}
+	} else if (e.type === 'evolve') {
+		const found = findMonSlot(players, e.iid);
+		if (found) {
+			if (e.cardId && e.cardId !== found.mon.cardId) delete found.mon.image;
+			found.mon.cardId = e.cardId || found.mon.cardId;
+			if (e.name) found.mon.name = e.name;
+			if (e.hp != null) found.mon.hp = Number(e.hp);
+			if (e.maxHp != null) found.mon.maxHp = Number(e.maxHp);
+		}
+		if (e.fromHand && e.cardId) {
+			const owner = players[e.seat as number];
+			if (owner) removeHandIds(owner, [e.cardId]);
+		}
+	} else if (e.type === 'ko') {
+		const p = players[e.seat as number];
+		if (p && e.iid) dropMonByIid(p, e.iid);
+	} else if (e.type === 'shuffle') {
+		const p = players[e.seat as number];
+		if (p) {
+			if (e.from === 'hand') setHand(p, Array.isArray(p.hand) ? [] : { count: 0 });
+			if (e.deck != null) p.deck = { count: Number(e.deck) };
+		}
+	} else if (e.type === 'toDiscard') {
+		const p = players[e.seat as number];
+		const ids = Array.isArray(e.ids) ? e.ids.filter(Boolean) as string[] : [];
+		if (p && ids.length) {
+			if (e.from === 'hand') removeHandIds(p, ids);
+			if (e.from === 'deck') p.deck = bumpPile(p.deck, -ids.length);
+			if (e.iid) {
+				const found = findMonSlot(players, e.iid);
+				if (found) detachPlayedCards(found.mon, ids);
+			}
+			if (!p.discard) p.discard = [];
+			for (const id of ids) p.discard.push(id);
+		}
+	} else if (e.type === 'fromDiscard') {
+		const p = players[e.seat as number];
+		const ids = Array.isArray(e.ids) ? e.ids.filter(Boolean) as string[] : [];
+		if (p && ids.length && Array.isArray(p.discard)) {
+			for (const id of ids) {
+				const at = p.discard.indexOf(id);
+				if (at >= 0) p.discard.splice(at, 1);
+			}
+		}
+	} else if (e.type === 'toLost') {
+		const p = players[e.seat as number];
+		if (p) p.lostZone = bumpPile(p.lostZone, Number(e.n) || 0);
+	} else if (e.type === 'trainer') {
+		const p = players[e.seat as number];
+		if (p && e.cardId && cardKind(e.cardId).supporter) p.playedSupporterThisTurn = true;
+	} else if (e.type === 'stadium') {
+		const seat = e.seat as number;
+		for (let s = 0; s < players.length; s++) {
+			const p = players[s];
+			if (!p) continue;
+			p.stadium = s === seat ? (e.cardId || null) : null;
+			if (s === seat) p.playedStadiumThisTurn = true;
+		}
+	} else if (e.type === 'stadiumEnd') {
+		for (const p of players) {
+			if (p) p.stadium = null;
+		}
+	} else if (e.type === 'prize') {
+		snap.pendingPrize = { seat: e.seat as number, n: Number(e.n) || 1 };
+	} else if (e.type === 'prizeTake') {
+		const p = players[e.seat as number];
+		if (p?.prizes) p.prizes = bumpPile(p.prizes, -1);
+		if (p && e.ids?.length) {
+			const hand = handAsIds(p.hand) || [];
+			setHand(p, hand.concat(e.ids));
+		} else if (p && !Array.isArray(p.hand) && p.hand) {
+			p.hand = bumpPile(p.hand as { count: number }, 1);
+		}
+		if (snap.pendingPrize && snap.pendingPrize.seat === e.seat) {
+			snap.pendingPrize = { ...snap.pendingPrize, n: Math.max(0, snap.pendingPrize.n - 1) };
+			if (snap.pendingPrize.n <= 0) delete snap.pendingPrize;
+		}
+	} else if (e.type === 'points') {
+		const p = players[e.seat as number];
+		if (p && e.total != null) {
+			p.points = Number(e.total);
+			if (snap.format?.energyZone && snap.format.prizes != null) {
+				p.prizes = { count: Math.max(0, Number(snap.format.prizes) - Number(e.total)) };
+			}
+		}
+	} else if (e.type === 'turn') {
+		if (e.seat != null) snap.turn = e.seat as number;
+		if (e.number != null) snap.turnNumber = Number(e.number);
+		if (snap.status === 'setup') snap.status = 'playing';
+		for (const p of players) {
+			if (!p) continue;
+			p.setup = 'done';
+			p.attachedEnergyThisTurn = false;
+			p.playedSupporterThisTurn = false;
+			p.playedStadiumThisTurn = false;
+			p.retreatedThisTurn = false;
+			if (p.active) p.active.faceDown = false;
+			const bench = p.bench || [];
+			for (const mon of bench) {
+				if (mon) mon.faceDown = false;
+			}
+		}
+	} else if (e.type === 'first') {
+		if (e.chooses) snap.pendingFirst = e.seat as number;
+		else delete snap.pendingFirst;
+	} else if (e.type === 'act') {
+		const seat = e.seat as number;
+		const p = players[seat];
+		const action = e.action as TcgAction | undefined;
+		if (p && action) {
+			const handTypes = [
+				'setActive', 'setBench', 'playBasic', 'evolve', 'attachEnergy', 'attachTool',
+				'playTrainer', 'playStadium', 'mulliganBench',
+			];
+			if (handTypes.includes(action.type) && typeof action.hand === 'number') {
+				removeHandIndex(p, action.hand);
+			}
+			if (action.type === 'setupDone') p.setup = 'done';
+			if (action.type === 'attachZone' && p.energyZone) {
+				p.energyZone = { ...p.energyZone, ready: false };
+				p.attachedEnergyThisTurn = true;
+			}
+			if (action.type === 'attachEnergy') p.attachedEnergyThisTurn = true;
+			if (action.type === 'retreat') p.retreatedThisTurn = true;
+			if (action.type === 'playStadium') p.playedStadiumThisTurn = true;
+			if (action.type === 'payEnergy' && typeof action.index === 'number') {
+				payEnergyAt(p, action.index);
+			}
+			if (action.type === 'discardPick' && typeof action.hand === 'number') {
+				removeHandIndex(p, action.hand);
+			}
+		}
+	} else if (e.type === 'request') {
+		clearPending(snap);
+		const kind = String(e.kind || '');
+		const waiting = Array.isArray(e.waiting) ? e.waiting : [];
+		const forYou = snap.you != null && waiting.some((seat: number) => seat === snap.you);
+		if (forYou && kind === 'search') {
+			snap.pendingSearch = {
+				kind: e.searchKind, left: e.left, upTo: e.upTo, zone: e.zone, dest: e.dest,
+			};
+		} else if (forYou && kind === 'discard' && e.need != null) {
+			snap.pendingDiscard = { need: Number(e.need) };
+		} else if (forYou && kind === 'retreatPay' && e.need != null) {
+			snap.pendingRetreatPay = { need: Number(e.need) };
+		} else if (forYou && kind === 'confirm') {
+			snap.pendingConfirm = { title: e.title, text: e.text };
+		} else if (kind === 'promote' || kind === 'switch') {
+			snap.pendingPromote = e.promote != null ? Number(e.promote) : (e.waiting?.[0] as number);
+		} else if (kind === 'first') {
+			snap.pendingFirst = e.waiting?.[0] as number;
+		} else if (kind === 'prize') {
+			snap.pendingPrize = {
+				seat: e.prizeSeat != null ? Number(e.prizeSeat) : Number(e.waiting?.[0] || 0),
+				n: Number(e.n) || 1,
+			};
+		}
+		if (kind === 'over') snap.status = 'over';
+		if (kind === 'setup') snap.status = 'setup';
+		if (kind === 'turn' && snap.status === 'setup') snap.status = 'playing';
+	} else if (e.type === 'over') {
+		snap.status = 'over';
+		if (e.winner !== undefined) snap.winner = e.winner;
+		if (e.reason) snap.winReason = e.reason;
+		clearPending(snap);
+	}
 }
 
 type Preview = { cardId: string, image?: string, name?: string };
@@ -678,7 +693,7 @@ function whoName(players: TcgPlayerView[] | undefined, seat: number | undefined)
 function actorLabel(
 	players: TcgPlayerView[] | undefined,
 	seat: number | undefined,
-	you?: number | null,
+	you?: number | null
 ): string {
 	if (seat == null) return 'A player';
 	if (you != null && seat === you) return 'You';
@@ -693,7 +708,7 @@ function findMonView(players: TcgPlayerView[] | undefined, iid?: string): TcgPok
 }
 function findMonSlot(
 	players: TcgPlayerView[] | undefined,
-	iid?: string,
+	iid?: string
 ): { seat: number, slot: TcgSlot, mon: TcgPokemonView } | null {
 	if (!iid || !players) return null;
 	for (let seat = 0; seat < players.length; seat++) {
@@ -702,7 +717,7 @@ function findMonSlot(
 		if (p.active?.iid === iid) return { seat, slot: 'active', mon: p.active };
 		const bench = p.bench || [];
 		for (let i = 0; i < bench.length; i++) {
-			if (bench[i]?.iid === iid) return { seat, slot: i, mon: bench[i]! };
+			if (bench[i]?.iid === iid) return { seat, slot: i, mon: bench[i] };
 		}
 	}
 	return null;
@@ -712,21 +727,20 @@ function placeSlotOf(e: TcgEvent): TcgSlot {
 	const n = Number(e.slot);
 	return Number.isFinite(n) ? n : 'active';
 }
-/** Names from earlier boards, so a KO still has a name after the Pokémon leaves play. */
-const seenMonNames = new Map<string, string>();
-const seenCardNames = new Map<string, string>();
+const seenMonNames: { [iid: string]: string } = Object.create(null);
+const seenCardNames: { [id: string]: string } = Object.create(null);
 export function noteTcgMons(players: TcgPlayerView[] | undefined) {
 	if (!players) return;
 	for (const p of players) {
 		const mons = [p?.active, ...(p?.bench || [])];
 		for (const mon of mons) {
-			if (mon?.iid && mon.name) seenMonNames.set(mon.iid, mon.name);
-			if (mon?.cardId && mon.name && mon.name !== mon.cardId) seenCardNames.set(mon.cardId, mon.name);
+			if (mon?.iid && mon.name) seenMonNames[mon.iid] = mon.name;
+			if (mon?.cardId && mon.name && mon.name !== mon.cardId) seenCardNames[mon.cardId] = mon.name;
 		}
 	}
 }
 function monName(players: TcgPlayerView[] | undefined, iid?: string): string {
-	return findMonView(players, iid)?.name || (iid && seenMonNames.get(iid)) || 'a Pokémon';
+	return findMonView(players, iid)?.name || (iid && seenMonNames[iid]) || 'a Pokémon';
 }
 const printedNames: { [id: string]: string } = {
 	'base1-97': 'Grass Energy',
@@ -743,11 +757,12 @@ const printedNames: { [id: string]: string } = {
 };
 const printedNamesLoaded: { [file: string]: boolean } = {};
 function loadPrintedNames(file = '/tcg-names.json') {
-	if (printedNamesLoaded[file] || typeof fetch !== 'function') return;
+	if (printedNamesLoaded[file]) return;
 	printedNamesLoaded[file] = true;
-	fetch(file).then(res => res.ok ? res.json() : null).then(data => {
-		if (data) Object.assign(printedNames, data);
-	}).catch(() => { /* keep board names and the basic-energy map */ });
+	Net(file).get().then(text => {
+		const data = JSON.parse(text);
+		if (data && typeof data === 'object') Object.assign(printedNames, data);
+	}).catch(() => {});
 }
 loadPrintedNames();
 /** The paper (Standard / Expanded / GLC) card index is ~20k entries; only pull it for a paper game. */
@@ -775,23 +790,21 @@ function cardName(players: TcgPlayerView[] | undefined, cardId?: string, iid?: s
 	const fromIid = findMonView(players, iid)?.name;
 	if (fromIid && fromIid !== cardId) return fromIid;
 	if (cardId && players) {
-		for (let s = 0; s < players.length; s++) {
-			const p = players[s];
+		for (const p of players) {
 			const mons = [p?.active, ...(p?.bench || [])];
-			for (let i = 0; i < mons.length; i++) {
-				const mon = mons[i];
+			for (const mon of mons) {
 				if (mon?.cardId === cardId && mon.name && mon.name !== cardId) return mon.name;
 			}
 		}
 	}
-	if (iid && seenMonNames.get(iid) && seenMonNames.get(iid) !== cardId) return seenMonNames.get(iid)!;
-	if (cardId && seenCardNames.get(cardId)) return seenCardNames.get(cardId)!;
+	if (iid && seenMonNames[iid] && seenMonNames[iid] !== cardId) return seenMonNames[iid];
+	if (cardId && seenCardNames[cardId]) return seenCardNames[cardId];
 	return printedName(cardId);
 }
 /** Printed card name when the index knows it; falls back to the raw id so nothing is blank. */
 function cardLabel(id?: string): string {
 	if (!id) return 'a card';
-	return seenCardNames.get(id) || printedName(id) || id;
+	return seenCardNames[id] || printedName(id) || id;
 }
 function statusWord(s: string | null | undefined): string {
 	const t = String(s || '').toLowerCase();
@@ -825,6 +838,8 @@ function afterKind(events: TcgEvent[], i: number, kind: string): boolean {
 		if (!p) return false;
 		const t = String(p.type || '');
 		if (t === kind) return true;
+		// A coin is its own beat. Damage and status after it are the flip's result.
+		if (t === 'coin') return false;
 		if (clusterSkip(t)) continue;
 		return false;
 	}
@@ -863,7 +878,9 @@ function attackHits(events: TcgEvent[], i: number, players?: TcgPlayerView[]): F
 		const n = events[j];
 		if (!n) break;
 		const t = String(n.type || '');
-		if (t === 'request' || t === 'act' || t === 'coin') continue;
+		if (t === 'request' || t === 'act') continue;
+		// Stop at the flip. Hits after it play once that coin beat finishes.
+		if (t === 'coin') break;
 		if (t === 'damage') hits.push({ iid: n.iid, amount: n.amount, kind: 'damage', src, label, element });
 		else if (t === 'heal') hits.push({ iid: n.iid, amount: n.amount, kind: 'heal' });
 		else if (t === 'status') hits.push({
@@ -880,7 +897,8 @@ function attackHitIndexes(events: TcgEvent[], i: number): number[] {
 	const out: number[] = [];
 	for (let j = i + 1; j < events.length; j++) {
 		const t = events[j]?.type;
-		if (t === 'request' || t === 'act' || t === 'coin') continue;
+		if (t === 'request' || t === 'act') continue;
+		if (t === 'coin') break;
 		if (t === 'damage' || t === 'heal' || t === 'status') out.push(j);
 		else break;
 	}
@@ -906,7 +924,7 @@ function precededByHandShuffle(events: TcgEvent[], i: number): boolean {
 function drawCause(
 	events: TcgEvent[],
 	i: number,
-	players?: TcgPlayerView[],
+	players?: TcgPlayerView[]
 ): { kind: string, name: string, cardId?: string } | null {
 	const e = events[i];
 	if (!e || e.type !== 'draw') return null;
@@ -917,7 +935,7 @@ function drawCause(
 		if (t === 'request' || t === 'act' || t === 'coin') continue;
 		if (t === 'draw') continue;
 		if (t === 'damage' || t === 'heal' || t === 'status' || t === 'ko' || t === 'place') continue;
-		if (t === 'shuffle' || t === 'toDiscard' || t === 'toLost') continue;
+		if (t === 'shuffle' || t === 'toDiscard' || t === 'toLost' || t === 'fromDiscard') continue;
 		if (t === 'turn' || t === 'deal' || t === 'checkup' || t === 'first' || t === 'start' || t === 'over') {
 			return null;
 		}
@@ -969,7 +987,7 @@ function fxDuration(e: TcgEvent): number {
 	if (t === 'over') return 4200;
 	if (t === 'prize' || t === 'prizeTake') return 1200;
 	if (t === 'points') return 2400;
-	if (t === 'find') return 2600;
+	if (t === 'find' || t === 'reveal') return 2600;
 	if (t === 'draw') return 2400; // effect draws override wait in playFx
 	if (t === 'deal') return 2400;
 	if (t === 'shuffleHand') return 2000;
@@ -1027,7 +1045,7 @@ export type TcgChatEntry = { kind: string, label: string, text: string, turn?: n
  */
 function searchZoneText(snap: TcgSnapshot | null | undefined, seat: number | undefined, own: boolean): string {
 	const whose = own ? 'your' : 'their';
-	const zone = snap && snap.you != null && seat === snap.you ? snap.pendingSearch?.zone : undefined;
+	const zone = snap?.you != null && seat === snap.you ? snap.pendingSearch?.zone : undefined;
 	if (zone === 'discard') return `${whose} discard pile`;
 	if (zone === 'prizes' || zone === 'prize') return `${whose} Prize cards`;
 	if (zone === 'deck') return `${whose} deck`;
@@ -1050,7 +1068,7 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?
 		return null;
 	case 'request':
 		if (ev.kind === 'search') {
-			const seat = (ev.waiting && ev.waiting[0]) ?? 0;
+			const seat = (ev.waiting?.[0]) ?? 0;
 			const own = snap?.you != null && seat === snap.you;
 			return {
 				kind: 'draw', label: 'Search',
@@ -1061,7 +1079,7 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?
 			};
 		}
 		if (ev.kind === 'mulligan') {
-			const seat = (ev.waiting && ev.waiting[0]) ?? 0;
+			const seat = (ev.waiting?.[0]) ?? 0;
 			const other = seat === 0 ? 1 : 0;
 			return {
 				kind: 'draw', label: 'Mulligan',
@@ -1147,7 +1165,17 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?
 		return {
 			kind: 'discard', label: 'Discard',
 			text: named ? `${w(ev.seat)} discarded ${named}.` :
-				`${w(ev.seat)} discarded ${ids.length || 1} card${(ids.length || 1) === 1 ? '' : 's'}.`,
+			`${w(ev.seat)} discarded ${ids.length || 1} card${(ids.length || 1) === 1 ? '' : 's'}.`,
+			seat: ev.seat,
+		};
+	}
+	case 'fromDiscard': {
+		const ids = Array.isArray(ev.ids) ? ev.ids.filter(Boolean) : [];
+		const named = ids.length ? ids.map(nm).join(', ') : '';
+		return {
+			kind: 'discard', label: 'Discard',
+			text: named ? `${w(ev.seat)} took ${named} from the discard pile.` :
+			`${w(ev.seat)} took a card from the discard pile.`,
 			seat: ev.seat,
 		};
 	}
@@ -1170,15 +1198,25 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?
 			seat: ev.seat,
 		};
 	}
+	case 'reveal': {
+		const ids = Array.isArray(ev.ids) ? ev.ids.filter(Boolean) : [];
+		const names = ids.map(nm).filter(Boolean);
+		const list = names.length ? names.join(', ') : 'no cards';
+		return {
+			kind: 'note', label: 'Reveal',
+			text: `${w(ev.seat)} revealed their hand: ${list}.`,
+			seat: ev.seat,
+		};
+	}
 	case 'find': {
 		const ids = Array.isArray(ev.ids) ? ev.ids.filter(Boolean) : [];
 		const text = ids.length === 1 ?
 			`${w(ev.seat)} put ${nm(ids[0])} into their hand.` :
 			ids.length > 1 ?
 				`${w(ev.seat)} put ${ids.map(nm).join(', ')} into their hand.` :
-				((ev.ids && ev.ids.length) || ev.n || 1) === 1 ?
+				((ev.ids?.length) || ev.n || 1) === 1 ?
 					`${w(ev.seat)} put a card into their hand.` :
-					`${w(ev.seat)} put ${(ev.ids && ev.ids.length) || ev.n} cards into their hand.`;
+					`${w(ev.seat)} put ${(ev.ids?.length) || ev.n} cards into their hand.`;
 		return { kind: 'draw', label: 'Search', text, seat: ev.seat };
 	}
 	case 'prize':
@@ -1238,13 +1276,13 @@ function fxFor(
 	i: number,
 	players?: TcgPlayerView[],
 	you?: number | null,
-	snap?: TcgSnapshot | null,
+	snap?: TcgSnapshot | null
 ): FxBeat {
 	if (!e) return { kind: '' };
 	const who = (seat?: number) => actorLabel(players, seat, you);
 	const yours = (seat?: number) => actorIsYou(seat, you);
 	if (e.type === 'request' && e.kind === 'search') {
-		const seat = (e.waiting && e.waiting[0] != null) ? e.waiting[0] : 0;
+		const seat = (e.waiting?.[0] != null) ? e.waiting[0] : 0;
 		const zone = searchZoneText(snap, seat, yours(seat));
 		return {
 			kind: 'search', seat, n: 5,
@@ -1254,7 +1292,7 @@ function fxFor(
 	}
 	if (e.type === 'request' && e.kind === 'mulligan') {
 		// The waiting seat is the one who gets to bench extra Basics; the *other* seat mulliganed.
-		const seat = (e.waiting && e.waiting[0] != null) ? e.waiting[0] : 0;
+		const seat = (e.waiting?.[0] != null) ? e.waiting[0] : 0;
 		const other = seat === 0 ? 1 : 0;
 		return {
 			kind: 'mulligan', seat, n: 7,
@@ -1269,6 +1307,17 @@ function fxFor(
 			kind: 'searchDone', seat: e.seat, n: 5,
 			extra: 'Shuffled their deck',
 			message: yours(e.seat) ? 'You shuffled your deck' : `${who(e.seat)} shuffled their deck`,
+		};
+	}
+	if (e.type === 'reveal') {
+		const ids = Array.isArray(e.ids) ? e.ids.filter(Boolean) as string[] : [];
+		const names = ids.map(cardLabel);
+		const found = names.length ? names.join(', ') : 'no cards';
+		return {
+			kind: 'reveal', seat: e.seat, n: ids.length,
+			extra: names.length <= 3 ? found : `${names.length} cards`,
+			cardId: ids[0] || '', ids, labels: names,
+			message: `${who(e.seat)} revealed their hand: ${found}`,
 		};
 	}
 	if (e.type === 'find') {
@@ -1498,6 +1547,21 @@ function fxFor(
 	if (e.type === 'checkup') {
 		return { kind: 'checkup', extra: 'Pokémon Checkup', message: 'Pokémon Checkup' };
 	}
+	if (e.type === 'toDiscard' || e.type === 'fromDiscard' || e.type === 'toLost') {
+		const ids = Array.isArray(e.ids) ? e.ids.filter(Boolean) as string[] : [];
+		const named = ids.length ? ids.map(cardLabel).join(', ') : '';
+		const took = e.type === 'fromDiscard';
+		return {
+			kind: 'discard',
+			seat: e.seat,
+			extra: named || (took ? 'From the discard pile' : e.type === 'toLost' ? 'Lost Zone' : 'Discarded'),
+			message: took ?
+				`${who(e.seat)} took ${named || 'a card'} from the discard pile` :
+				e.type === 'toLost' ?
+					`${who(e.seat)} put a card in the Lost Zone` :
+					`${who(e.seat)} discarded ${named || 'a card'}`,
+		};
+	}
 	return {
 		kind: e.type,
 		iid: e.iid || '',
@@ -1506,22 +1570,22 @@ function fxFor(
 		amount: e.type === 'points' && e.total != null ? e.total : e.amount,
 		n: e.n,
 		extra: e.type === 'coin' ? (e.heads ? 'Heads' : 'Tails') :
-			e.type === 'turn' ? `Turn ${e.number} · ${whoName(players, e.seat)}` :
-			e.type === 'first' ? (e.chooses ?
-				`${whoName(players, e.seat)} chooses who goes first` :
-				`${whoName(players, e.seat)} goes first`) :
-			e.type === 'status' ? (e.status ? statusWord(e.status) : 'Recovered') :
-			e.type === 'stadiumEnd' ? 'No longer in play' :
-			(e.name || e.status || e.reason || ''),
+		e.type === 'turn' ? `Turn ${e.number} · ${whoName(players, e.seat)}` :
+		e.type === 'first' ? (e.chooses ?
+			`${whoName(players, e.seat)} chooses who goes first` :
+			`${whoName(players, e.seat)} goes first`) :
+		e.type === 'status' ? (e.status ? statusWord(e.status) : 'Recovered') :
+		e.type === 'stadiumEnd' ? 'No longer in play' :
+		(e.name || e.status || e.reason || ''),
 		message: e.type === 'coin' ? (e.heads ? 'Heads!' : 'Tails!') :
-			e.type === 'first' ? (e.chooses ?
-				`${who(e.seat)} chooses who goes first` :
-				`${who(e.seat)} goes first`) :
-			e.type === 'status' ? (e.status ?
-				`${monName(players, e.iid)} is ${statusWord(e.status)}` :
-				`${monName(players, e.iid)} recovered`) :
-			e.type === 'stadiumEnd' ? `${cardLabel(e.cardId)} is no longer in play` :
-			undefined,
+		e.type === 'first' ? (e.chooses ?
+			`${who(e.seat)} chooses who goes first` :
+			`${who(e.seat)} goes first`) :
+		e.type === 'status' ? (e.status ?
+			`${monName(players, e.iid)} is ${statusWord(e.status)}` :
+			`${monName(players, e.iid)} recovered`) :
+		e.type === 'stadiumEnd' ? `${cardLabel(e.cardId)} is no longer in play` :
+		undefined,
 		cardId: e.cardId || '',
 		coins: e.type === 'coin' ? [!!e.heads] : undefined,
 		status: e.type === 'status' ? (e.status == null ? '' : String(e.status).toLowerCase()) : undefined,
@@ -1555,7 +1619,7 @@ function pkClass(fx: FxBeat): string {
 function buildPkFx(fx: FxBeat, tick = 0): { [iid: string]: PkFx } {
 	const out: { [iid: string]: PkFx } = {};
 	const put = (
-		iid: string | undefined, cls: string, dataFx?: string, element?: string, status?: string,
+		iid: string | undefined, cls: string, dataFx?: string, element?: string, status?: string
 	) => {
 		if (!iid) return;
 		out[iid] = { cls, dataFx, tick, element, status };
@@ -1584,7 +1648,7 @@ function buildPkFx(fx: FxBeat, tick = 0): { [iid: string]: PkFx } {
 			`${cls}${src ? ` src-${src}` : ''}`,
 			dataFx,
 			h.kind === 'damage' ? (h.element || fx.element) : undefined,
-			h.kind === 'status' ? (h.status ?? '') : undefined,
+			h.kind === 'status' ? (h.status ?? '') : undefined
 		);
 	}
 	return out;
@@ -1663,7 +1727,7 @@ class FxOverlay extends preact.Component<{
 		);
 
 		if (k === 'coin') {
-			const coins = (fx.coins && fx.coins.length) ? fx.coins :
+			const coins = (fx.coins?.length) ? fx.coins :
 				[fx.extra === 'Heads' || fx.extra === 'HEADS'];
 			const shown = coins.slice(0, 8);
 			const headsN = shown.filter(Boolean).length;
@@ -1707,7 +1771,7 @@ class FxOverlay extends preact.Component<{
 		}
 		if (k === 'drawEffect') {
 			const n = Math.max(fx.n || 0, fx.ids?.length || 0, 1);
-			const ids = (fx.ids && fx.ids.length) ? fx.ids : [];
+			const ids = (fx.ids?.length) ? fx.ids : [];
 			const faces = ids.length > 0;
 			const count = Math.min(faces ? ids.length : n, 8);
 			const kindLabel = fx.src === 'attack' ? 'Attack' :
@@ -1731,7 +1795,7 @@ class FxOverlay extends preact.Component<{
 						{Array.from({ length: count }, (_, i) =>
 							faces ?
 								<span class="fx-draw-card face" style={{ '--i': String(i) } as any} key={i}>
-									<MiniArt cardId={ids[i]} name={(fx.labels && fx.labels[i]) || ''} />
+									<MiniArt cardId={ids[i]} name={(fx.labels?.[i]) || ''} />
 								</span> :
 								<span class="fx-draw-card back" style={{ '--i': String(i) } as any} key={i}>
 									<span class="fx-mini-card back"></span>
@@ -1781,16 +1845,19 @@ class FxOverlay extends preact.Component<{
 				<div class={`fx-search-fan ${seat}`}>{fanCards(7)}</div>
 			</>);
 		}
-		if (k === 'find') {
-			const ids = (fx.ids && fx.ids.length) ? fx.ids : (fx.cardId ? [fx.cardId] : []);
+		if (k === 'reveal' || k === 'find') {
+			const ids = (fx.ids?.length) ? fx.ids : (fx.cardId ? [fx.cardId] : []);
 			const faces = ids.length ? ids.map((id, i) => {
-				const name = (fx.labels && fx.labels[i]) || '';
+				const name = (fx.labels?.[i]) || '';
 				return <span class="fx-found-card" key={i}>
 					<span class="fx-mini-card face"><MiniArt cardId={id} name={name} /></span>
 					{name ? <em>{name}</em> : null}
 				</span>;
-			}) : <span class="fx-mini-card back"></span>;
-			return wrap('find', <div class={`fx-found-row ${seat}`}>{faces}</div>);
+			}) : (k === 'reveal' ? null : <span class="fx-mini-card back"></span>);
+			return wrap(k === 'reveal' ? 'reveal' : 'find', <>
+				{k === 'reveal' ? cap('REVEAL', fx.extra || 'Hand') : null}
+				<div class={`fx-found-row ${seat}`}>{faces}</div>
+			</>);
 		}
 		if (k === 'discard') {
 			return wrap('discard', <>
@@ -1866,12 +1933,8 @@ class FxOverlay extends preact.Component<{
 			</>, 'ability');
 		}
 		if (k === 'turn') {
-			const isYours = fx.seat != null && this.props.you != null && fx.seat === this.props.you;
-			const turnNo = String(fx.extra || '').match(/Turn\s+(\d+)/i)?.[1];
-			const seatName = fx.seat != null ? this.props.names?.[fx.seat] || '' : '';
-			const whose = isYours ? 'Your turn' :
-				this.props.you != null || !seatName ? "Opponent's turn" : `${seatName}'s turn`;
-			return wrap('turn', cap(turnNo ? `TURN ${turnNo}` : 'TURN', whose));
+			// The header badge already says whose turn this is.
+			return null;
 		}
 		if (k === 'first') return wrap('first', cap('FIRST', fx.extra));
 		if (k === 'over') {
@@ -1881,6 +1944,7 @@ class FxOverlay extends preact.Component<{
 		if (k === 'points') return wrap('points', <div class="fx-points-burst">+{fx.n || 1}</div>);
 		if (k === 'status') return wrap('status', cap('STATUS', fx.extra ? String(fx.extra) : 'Recovered'));
 		if (k === 'checkup') return wrap('checkup', cap('CHECKUP', 'Pokémon Checkup'));
+		if (k === 'discard') return wrap('discard', cap('DISCARD', fx.extra || 'Discard'));
 		if (k === 'ko') {
 			return wrap('ko', <>
 				{cap('KNOCKED OUT', fx.extra || undefined)}
@@ -2134,14 +2198,14 @@ type CardKind = {
 function cardKind(id: string): CardKind {
 	const c = id ? getTcgCard(id) : undefined;
 	const subs = (c?.u || []).map(s => s.toLowerCase());
-	const has = (name: string) => subs.indexOf(name) >= 0;
+	const has = (name: string) => subs.includes(name);
 	return {
 		known: !!c,
 		pokemon: c?.s === 'P',
 		trainer: c?.s === 'T',
 		energy: c?.s === 'E' || /energy/i.test(id) || /^sve-\d+$/i.test(id),
 		basic: has('basic'),
-		stage: subs.some(s => s.indexOf('stage') === 0),
+		stage: subs.some(s => s.startsWith('stage')),
 		supporter: has('supporter'),
 		item: has('item'),
 		stadium: has('stadium'),
@@ -2362,7 +2426,6 @@ function pip(type: string, key?: string | number) {
 	></span>;
 }
 
-
 function promptHeading(snap: TcgSnapshot, kind: string): { title: string, sub?: string } {
 	if (kind === 'confirm') {
 		return {
@@ -2533,7 +2596,7 @@ class TcgCardFace extends preact.Component<{
 		if (step < 3) {
 			img.dataset.fallback = '3';
 			img.src = scrydexArt(cardId, true);
-			return;
+
 		}
 	};
 	override render() {
@@ -2869,11 +2932,10 @@ export class TcgBoard extends preact.Component<{
 		inspect: null as Preview | null,
 		menuSlot: null as TcgSlot | null,
 		endTurnConfirm: false,
-		/**
-		 * takePrize clicks already sent while the board still shows the pre-pick snapshot.
-		 * Used so the prize prompt closes as soon as enough picks are in, not after FX.
-		 */
-		prizeTakenLocal: 0,
+		/** Prize indexes already sent for the current prompt. */
+		prizePicked: [] as number[],
+		/** How many prizes this prompt asked for. The prompt closes once that many are sent. */
+		prizeGoal: 0,
 		drag: null as DragState | null,
 		/** Why the play the player just tried is illegal, anchored at the pointer. */
 		refuse: null as { text: string, x: number, y: number } | null,
@@ -2990,15 +3052,22 @@ export class TcgBoard extends preact.Component<{
 			if (this.timer != null) window.clearTimeout(this.timer);
 			this.timer = null;
 			this.clearFx();
-		}
-		// Server caught up to our prize picks — drop the optimistic counter.
-		const prevPrize = prev.snapshot?.pendingPrize;
-		const nextPrize = this.props.snapshot?.pendingPrize;
-		if (
-			this.state.prizeTakenLocal &&
-			(prevPrize?.n !== nextPrize?.n || prevPrize?.seat !== nextPrize?.seat || !nextPrize)
-		) {
-			this.setState({ prizeTakenLocal: 0 });
+			if (this.state.prizePicked.length || this.state.prizeGoal) {
+				this.setState({ prizePicked: [], prizeGoal: 0 });
+			}
+		} else if (this.state.prizePicked.length || this.state.prizeGoal) {
+			// Forget the picks only after this prompt's choices are gone.
+			// Do not trim the count while the server still lists prizes — that
+			// reopens the prompt before the last click has been acknowledged.
+			const live = this.acts();
+			let any = false;
+			for (let j = 0; j < live.length; j++) {
+				if (live[j].type === 'takePrize') {
+					any = true;
+					break;
+				}
+			}
+			if (!any) this.setState({ prizePicked: [], prizeGoal: 0 });
 		}
 		if (this.props.fxKey !== prev.fxKey) {
 			this.stashHands(prev.fxSnapshot || prev.snapshot);
@@ -3203,9 +3272,10 @@ export class TcgBoard extends preact.Component<{
 		if (!root) return;
 		const s = root.getBoundingClientRect();
 		const aim = (fly: HTMLElement, fallbackSel: string, fromHand: boolean) => {
-			const iid = fly.getAttribute('data-target');
-			const target = (iid && root.querySelector(`.tcg-mon[data-iid="${CSS.escape(iid)}"]`)) as HTMLElement | null
-				|| root.querySelector(fallbackSel) as HTMLElement | null;
+			const iid = fly.getAttribute('data-target') || '';
+			const safe = iid.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+			const target = (iid && root.querySelector(`.tcg-mon[data-iid="${safe}"]`)) as HTMLElement | null ||
+				root.querySelector(fallbackSel);
 			if (!target) {
 				fly.classList.add('stay');
 				return;
@@ -3220,9 +3290,9 @@ export class TcgBoard extends preact.Component<{
 			fly.style.setProperty('--end-scale', String(Math.max(0.22, Math.min(0.55, t.width / 140))));
 			fly.classList.add('go');
 		};
-		const en = root.querySelector('.fx-en-fly') as HTMLElement | null;
+		const en = root.querySelector('.fx-en-fly');
 		if (en) aim(en, '.tcg-mon.fx-energy', false);
-		const place = root.querySelector('.fx-place-fly') as HTMLElement | null;
+		const place = root.querySelector('.fx-place-fly');
 		if (place) aim(place, '.tcg-mon.fx-place', true);
 	}
 
@@ -3354,7 +3424,7 @@ export class TcgBoard extends preact.Component<{
 
 			// Prefer private draw ids from the event; otherwise infer from hand delta for your seat.
 			if ((fx.kind === 'draw' || fx.kind === 'drawEffect') && e.type === 'draw') {
-				if ((!fx.ids || !fx.ids.length) && actorIsYou(e.seat, you) && e.seat != null) {
+				if ((!fx.ids?.length) && actorIsYou(e.seat, you) && e.seat != null) {
 					const inferred = this.inferDrawnIds(e.seat, e.n || fx.n || 1);
 					if (inferred?.length) {
 						fx = { ...fx, ids: inferred, labels: inferred.map(cardLabel), n: inferred.length };
@@ -3388,7 +3458,7 @@ export class TcgBoard extends preact.Component<{
 					i++;
 					let wait = Math.max(fx.kind === 'drawEffect' ? 3200 : fxDuration(e), BEAT_MS);
 					if (e.type === 'request' && (e.kind === 'search' || e.kind === 'mulligan') &&
-						actorIsYou((e.waiting && e.waiting[0]), you)) wait = 80;
+						actorIsYou((e.waiting?.[0]), you)) wait = 80;
 					this.timer = window.setTimeout(step, wait);
 				}, 2000);
 				return;
@@ -3431,9 +3501,9 @@ export class TcgBoard extends preact.Component<{
 					n: results.length,
 					seat: firstEv?.seat ?? e.seat,
 					extra: firstEv ? 'First' :
-						(results.length === 1 ?
-							(results[0] ? 'Heads' : 'Tails') :
-							`${results.length} flips`),
+					(results.length === 1 ?
+						(results[0] ? 'Heads' : 'Tails') :
+						`${results.length} flips`),
 					message: firstEv ?
 						(firstEv.chooses ?
 							(youWonFirst ?
@@ -3465,17 +3535,26 @@ export class TcgBoard extends preact.Component<{
 				};
 			}
 
-			// Discard and Lost Zone ride along with the play that caused them.
-			if (e.type === 'toDiscard' || e.type === 'toLost') {
+			// Pile changes ride along with an attack. A discard before a place (setup,
+			// playing a Pokémon) is its own beat so the log lines stay separate.
+			const pileMove = (t?: string) => t === 'toDiscard' || t === 'toLost' || t === 'fromDiscard';
+			if (pileMove(e.type)) {
 				let j = i + 1;
-				while (j < events.length && (events[j]?.type === 'toDiscard' || events[j]?.type === 'toLost')) {
+				while (j < events.length && pileMove(events[j]?.type)) {
 					this.props.onEvent?.(events[j]);
 					j++;
 				}
 				this.foldEvents(events, j - 1);
+				const nxt = events[j];
+				const ownBeat = nxt?.type === 'place' || nxt?.type === 'evolve';
 				i = j;
 				this.forceUpdate();
-				this.timer = window.setTimeout(step, 0);
+				if (ownBeat) {
+					show(fx, e);
+					this.timer = window.setTimeout(step, BEAT_MS);
+				} else {
+					this.timer = window.setTimeout(step, 0);
+				}
 				return;
 			}
 
@@ -3483,17 +3562,19 @@ export class TcgBoard extends preact.Component<{
 			let advance = 1;
 			if (e.type !== 'attack' && e.type !== 'ability') {
 				let j = i + 1;
-				while (j < events.length && (events[j]?.type === 'toDiscard' || events[j]?.type === 'toLost')) {
+				while (j < events.length && pileMove(events[j]?.type)) {
 					this.props.onEvent?.(events[j]);
 					j++;
 				}
 				if (j > i + 1) this.foldEvents(events, j - 1);
 				advance = j - i;
 			}
-			// A switch is two places. The first beat's FLIP already exchanges the two cards.
+			// A switch is two places of Pokémon already in play. Setup Active + Bench are new cards.
 			if (e.type === 'place') {
 				const nxt = events[i + advance];
-				if (nxt?.type === 'place' && nxt.seat === e.seat) {
+				const alreadyThere = nxt?.type === 'place' && nxt.seat === e.seat &&
+					!!findMonSlot(this.boardSnap?.players, nxt.iid);
+				if (alreadyThere) {
 					this.props.onEvent?.(nxt);
 					this.foldEvents(events, i + advance);
 					advance += 1;
@@ -3504,42 +3585,44 @@ export class TcgBoard extends preact.Component<{
 				const hits = attackHits(events, i, players);
 				const hitAt = attackHitIndexes(events, i);
 				if (!fx.extra) fx.extra = e.name || (e.type === 'ability' ? 'Ability' : 'Attack');
-				if (!fx.message) fx.message = `${monName(players, e.iid)} used ${fx.extra}`;
+				if (!fx.message) fx.message = `${monName(players, e.iid)} used ${fx.extra || ''}`;
 
 				const numbered = hits.filter(h =>
 					(h.kind === 'damage' || h.kind === 'heal') && (h.amount || 0) > 0
 				);
-				// Non-damaging moves: no lunge / slash / damage badge.
+				// No damage before the next coin: the name still plays, then any status
+				// that landed before the flip. The coin and its result stay in the queue.
 				if (!numbered.length) {
-					if (hits.some(h => h.kind === 'status')) {
-						let hi = 0;
-						const playStatus = () => {
-							if (hi >= hits.length) {
-								i++;
-								this.timer = window.setTimeout(step, BEAT_MS);
-								return;
-							}
-							const at = hitAt[hi];
-							const h = hits[hi++];
-							if (at != null) this.foldEvents(events, at);
-							if (h.kind !== 'status') {
-								this.timer = window.setTimeout(playStatus, 0);
-								return;
-							}
-							show({
-								kind: 'status',
-								iid: h.iid,
-								status: h.status ?? '',
-								src: h.src || (e.type === 'ability' ? 'ability' : 'attack'),
-								extra: h.label || statusWord(h.status) || 'Recovered',
-							});
-							this.timer = window.setTimeout(playStatus, HIT_MS);
-						};
-						playStatus();
+					show({ ...fx, hits: [] });
+					if (!hits.some(h => h.kind === 'status')) {
+						i++;
+						this.timer = window.setTimeout(step, BEAT_MS);
 						return;
 					}
-					i++;
-					this.timer = window.setTimeout(step, BEAT_MS);
+					let hi = 0;
+					const playStatus = () => {
+						if (hi >= hits.length) {
+							i++;
+							this.timer = window.setTimeout(step, BEAT_MS);
+							return;
+						}
+						const at = hitAt[hi];
+						const h = hits[hi++];
+						if (at != null) this.foldEvents(events, at);
+						if (h.kind !== 'status') {
+							this.timer = window.setTimeout(playStatus, 0);
+							return;
+						}
+						show({
+							kind: 'status',
+							iid: h.iid,
+							status: h.status ?? '',
+							src: h.src || (e.type === 'ability' ? 'ability' : 'attack'),
+							extra: h.label || statusWord(h.status) || 'Recovered',
+						});
+						this.timer = window.setTimeout(playStatus, HIT_MS);
+					};
+					this.timer = window.setTimeout(playStatus, WINDUP_MS);
 					return;
 				}
 				// Wind-up, then each hit. HP is written when that hit connects, not on the lunge.
@@ -3580,10 +3663,17 @@ export class TcgBoard extends preact.Component<{
 				return;
 			}
 
+			// A 0-damage result (a tails flip that missed) updates nothing visible.
+			if ((e.type === 'damage' || e.type === 'heal') && !(Number(e.amount) || 0)) {
+				i += advance;
+				this.timer = window.setTimeout(step, 0);
+				return;
+			}
+
 			show(fx, e);
 			let wait = Math.max(fx.kind === 'drawEffect' ? 3200 : fxDuration(e), BEAT_MS);
 			if (e.type === 'request' && (e.kind === 'search' || e.kind === 'mulligan') &&
-				actorIsYou((e.waiting && e.waiting[0]), you)) wait = 80;
+				actorIsYou((e.waiting?.[0]), you)) wait = 80;
 			if (e.type === 'shuffle' && e.from !== 'hand') wait = 700;
 			i += advance;
 			this.timer = window.setTimeout(step, wait);
@@ -3605,13 +3695,20 @@ export class TcgBoard extends preact.Component<{
 	};
 
 	choose = (a: TcgAction) => {
-		const prizeTakenLocal = a.type === 'takePrize' ?
-			this.state.prizeTakenLocal + 1 :
-			0;
+		let prizePicked = this.state.prizePicked;
+		let prizeGoal = this.state.prizeGoal;
+		if (a.type === 'takePrize') {
+			const idx = Number(a.index);
+			if (prizePicked.indexOf(idx) < 0) prizePicked = prizePicked.concat(idx);
+			if (!prizeGoal) {
+				const pending = (this.boardSnap || this.props.snapshot).pendingPrize;
+				prizeGoal = pending?.n || prizePicked.length;
+			}
+		}
 		this.stopRefuseTimer();
 		this.setState({
 			selectedHand: null, energyPick: false, retreatPick: false, drag: null,
-			menuSlot: null, endTurnConfirm: false, prizeTakenLocal, refuse: null,
+			menuSlot: null, endTurnConfirm: false, prizePicked, prizeGoal, refuse: null,
 		});
 		this.props.onAct(a);
 	};
@@ -3691,7 +3788,7 @@ export class TcgBoard extends preact.Component<{
 	hitDrop(x: number, y: number): DropTarget | null {
 		const el = document.elementFromPoint(x, y) as HTMLElement | null;
 		if (!el) return null;
-		const mon = el.closest('.tcg-mon') as HTMLElement | null;
+		const mon = el.closest('.tcg-mon');
 		if (mon) {
 			const slotRaw = mon.getAttribute('data-drop-slot');
 			if (slotRaw == null) return null;
@@ -3732,7 +3829,7 @@ export class TcgBoard extends preact.Component<{
 		} else if (active) {
 			hint = drag.source === 'zone' ? 'Drop on a Pokémon' : 'Drop on a valid target';
 			const idle = drag.source === 'hand' && drag.hand != null &&
-				!this.acts().some(a => actionTouchesHand(a, drag.hand as number));
+				!this.acts().some(a => actionTouchesHand(a, drag.hand!));
 			const text = idle ? whyCant(this.props.snapshot, { hand: drag.hand }, this.props.waiting) : '';
 			refuse = text ? { text, x: e.clientX, y: e.clientY } : null;
 		}
@@ -4050,9 +4147,11 @@ export class TcgBoard extends preact.Component<{
 		const discards = allActs.filter(a => a.type === 'discardPick');
 		const pays = allActs.filter(a => a.type === 'payEnergy');
 		const prizeActs = allActs.filter(a => a.type === 'takePrize');
-		const prizeNeed = view.pendingPrize?.n || 0;
-		// Snapshot (and takePrize actions) lag until prize FX commits — hide as soon as enough picks are sent.
-		const prizes = (prizeNeed > 0 && this.state.prizeTakenLocal >= prizeNeed) ? [] : prizeActs;
+		const picked = this.state.prizePicked;
+		const prizeGoal = this.state.prizeGoal || view.pendingPrize?.n || 0;
+		// Close the whole prompt on the click that finishes the set, not when the server catches up.
+		const prizeDone = prizeGoal > 0 && picked.length >= prizeGoal;
+		const prizes = prizeDone ? [] : prizeActs.filter(a => picked.indexOf(Number(a.index)) < 0);
 		const mulligans = allActs.filter(a => a.type === 'mulliganBench' || a.type === 'mulliganDone');
 		const useStadium = allActs.find(a => a.type === 'useStadium');
 		const selectedHand = this.state.selectedHand;
@@ -4080,38 +4179,38 @@ export class TcgBoard extends preact.Component<{
 		const discardDropHits = drag?.active ?
 			actionsForDrop(allActs, drag, { kind: 'discard' }) :
 			(selectedHand != null ? actionsForDrop(allActs, { source: 'hand', hand: selectedHand }, { kind: 'discard' }) : []);
-		const playHot = dragging && drag!.over?.kind === 'play' && playDropHits.length > 0;
-		const stadiumHot = dragging && drag!.over?.kind === 'stadium' && stadiumDropHits.length > 0;
-		const discardHot = dragging && drag!.over?.kind === 'discard' && discardDropHits.length > 0;
+		const playHot = dragging && drag.over?.kind === 'play' && playDropHits.length > 0;
+		const stadiumHot = dragging && drag.over?.kind === 'stadium' && stadiumDropHits.length > 0;
+		const discardHot = dragging && drag.over?.kind === 'discard' && discardDropHits.length > 0;
 
-		// No coaching once the game is over (replays re-show setup-phase snapshots).
-		// Spectators never get player prompts (discard / setup / search).
 		const seated = snap.you != null && !this.props.ended;
-		const hint = this.props.ended || !seated ? (dragging && drag!.hint) || '' : (dragging && drag!.hint) ||
-			view.pendingConfirm?.text ||
-			(this.state.energyPick ? 'Choose a Pokémon for Energy' : '') ||
-			(this.state.retreatPick ? 'Choose a Benched Pokémon to switch in' : '') ||
-			(this.state.menuSlot != null ? 'Choose an action' : '') ||
-			(selectedHand != null && selectedHandNeedTarget.length ?
-				`Drag or tap a Pokémon for ${describeAction(selectedHandNeedTarget[0], snap)}` : '') ||
-			(selectedHand != null ? 'Drag onto a target or the play area' : '') ||
-			(view.pendingSearch ? 'Choose a card from the search' : '') ||
-			(view.pendingDiscard ? `Drag ${view.pendingDiscard.need} card${view.pendingDiscard.need === 1 ? '' : 's'} to Discard` : '') ||
-			(view.pendingRetreatPay ? `Discard ${view.pendingRetreatPay.need} Energy to retreat` : '') ||
-			(view.pendingPromote != null && view.pendingPromote === snap.you ?
-				'Choose a Benched Pokémon to promote' : '') ||
-			(prizes.length && view.pendingPrize ?
-				`Take ${Math.max(1, view.pendingPrize.n - this.state.prizeTakenLocal)} Prize card${
-					view.pendingPrize.n - this.state.prizeTakenLocal === 1 ? '' : 's'
-				}` :
-				prizes.length ? 'Take a Prize card' : '') ||
-			(discards.length ? 'Drag a card to Discard' : '') ||
-			(snap.status === 'setup' && !choosingFirst ? 'Drag Basics to Active / Bench, then Ready' : '') ||
-			(yourTurn ? 'Drag cards to play · Tap your Pokémon to attack' : '');
+		let hint = (dragging && drag.hint) || '';
+		if (!this.props.ended && seated && !hint) {
+			const prizeLeft = prizeDone ? 0 : (view.pendingPrize ? view.pendingPrize.n - picked.length : 0);
+			const lines = [
+				view.pendingConfirm?.text || '',
+				this.state.energyPick ? 'Choose a Pokémon for Energy' : '',
+				this.state.retreatPick ? 'Choose a Benched Pokémon to switch in' : '',
+				this.state.menuSlot != null ? 'Choose an action' : '',
+				selectedHand != null && selectedHandNeedTarget.length ?
+					`Drag or tap a Pokémon for ${describeAction(selectedHandNeedTarget[0], snap)}` : '',
+				selectedHand != null ? 'Drag onto a target or the play area' : '',
+				view.pendingSearch ? 'Choose a card from the search' : '',
+				view.pendingDiscard ?
+					`Drag ${view.pendingDiscard.need} card${view.pendingDiscard.need === 1 ? '' : 's'} to Discard` : '',
+				view.pendingRetreatPay ? `Discard ${view.pendingRetreatPay.need} Energy to retreat` : '',
+				view.pendingPromote != null && view.pendingPromote === snap.you ?
+					'Choose a Benched Pokémon to promote' : '',
+				prizes.length && view.pendingPrize ?
+					`Take ${Math.max(1, prizeLeft)} Prize card${prizeLeft === 1 ? '' : 's'}` : '',
+				prizes.length ? 'Take a Prize card' : '',
+				discards.length ? 'Drag a card to Discard' : '',
+				snap.status === 'setup' && !choosingFirst ? 'Drag Basics to Active / Bench, then Ready' : '',
+				yourTurn ? 'Drag cards to play · Tap your Pokémon to attack' : '',
+			];
+			hint = lines.find(line => line) || '';
+		}
 
-		// Only call it "waiting for opponent" when the opponent actually holds the
-		// turn (or still has setup to finish); a server round-trip during our own
-		// turn is not their fault and the banner would just flash on every click.
 		const foeHoldsTurn = view.status === 'setup' ?
 			me.setup === 'done' && foe.setup !== 'done' :
 			turnSeat != null && !isMyTurnSeat;
@@ -4124,7 +4223,7 @@ export class TcgBoard extends preact.Component<{
 		if (st.fx?.kind === 'over') {
 			if (st.fx.tie) winName = null;
 			else {
-				const fromFx = String(st.fx.extra || '').match(/^(.+?)\s+wins?\.?$/i)?.[1];
+				const fromFx = (/^(.+?)\s+wins?\.?$/i.exec(String(st.fx.extra || '')))?.[1];
 				if (fromFx && !/^draw$/i.test(fromFx)) winName = fromFx;
 			}
 		}
@@ -4244,7 +4343,7 @@ export class TcgBoard extends preact.Component<{
 						</div>
 					</div>
 					<div class="tcg-side right">
-						<div class={`tcg-pile deck foe`} title={`Opponent deck: ${pileCount(foe.deck)}`}>
+						<div class="tcg-pile deck foe" title={`Opponent deck: ${pileCount(foe.deck)}`}>
 							<div class="tcg-pile-stack">
 								<span></span><span></span>
 								<div class="tcg-card tcg-card-sm tcg-card-back">
@@ -4283,7 +4382,7 @@ export class TcgBoard extends preact.Component<{
 					>
 						{stadiumId ?
 							<TcgCardFace
-								cardId={stadiumId} name="Stadium" size="sm"
+								cardId={stadiumId} name={cardLabel(stadiumId)} size="sm"
 								onClick={useStadium ? () => this.choose(useStadium) : undefined}
 								onInspect={this.openInspect}
 							/> :
@@ -4385,42 +4484,42 @@ export class TcgBoard extends preact.Component<{
 
 			<div class="tcg-dock">
 				<div class={`tcg-hand tcg-hand-mine${shufflingMine ? ' is-shuffling' : ''}`}>
-				{shufflingMine ? (
-					shuffleHandIds?.length ?
-						shuffleHandIds.map((id, i) =>
-							<TcgCardFace
-								key={`sh-${id}-${i}`} cardId={id} size="md"
-								pocket={pocket}
-								fanIndex={i} fanCount={shuffleHandIds.length}
-							/>
-						) :
-						Array.from({ length: shuffleHandCount }, (_, i) =>
-							<TcgCardFace
-								key={`shb${i}`} back size="md"
-								fanIndex={i} fanCount={shuffleHandCount}
-							/>
-						)
-				) : myHand ? myHand.map(({ id, i, arrive }, fan) => {
-					const playable = i >= 0 && allActs.some(a => actionTouchesHand(a, i));
-					// Key by "nth copy of this card", not by index, so playing one card lets the
-					// rest glide over instead of remounting every card to its right.
-					let nth = 0;
-					for (let j = 0; j < fan; j++) if (myHand[j].id === id) nth++;
-					return <TcgCardFace
-						key={`${id}#${nth}`} cardId={id} size="md"
-						pocket={pocket}
-						arrive={arrive}
-						selected={i >= 0 && this.state.selectedHand === i}
-						playable={playable}
-						dragging={i >= 0 && drag?.source === 'hand' && drag.hand === i && dragging}
-						fanIndex={fan} fanCount={myHand.length}
-						onPointerDown={i >= 0 ? (ev: any) => this.startHandDrag(i, id, ev) : undefined}
-						onHold={this.onCardHold}
-						onInspect={this.openInspect}
-					/>;
-				}) : Array.from({ length: pileCount(me.hand) }, (_, i) =>
-					<TcgCardFace key={i} back size="md" />
-				)}
+					{shufflingMine ? (
+						shuffleHandIds?.length ?
+							shuffleHandIds.map((id, i) =>
+								<TcgCardFace
+									key={`sh-${id}-${i}`} cardId={id} size="md"
+									pocket={pocket}
+									fanIndex={i} fanCount={shuffleHandIds.length}
+								/>
+							) :
+							Array.from({ length: shuffleHandCount }, (_, i) =>
+								<TcgCardFace
+									key={`shb${i}`} back size="md"
+									fanIndex={i} fanCount={shuffleHandCount}
+								/>
+							)
+					) : myHand ? myHand.map(({ id, i, arrive }, fan) => {
+						const playable = i >= 0 && allActs.some(a => actionTouchesHand(a, i));
+						// Key by "nth copy of this card", not by index, so playing one card lets the
+						// rest glide over instead of remounting every card to its right.
+						let nth = 0;
+						for (let j = 0; j < fan; j++) if (myHand[j].id === id) nth++;
+						return <TcgCardFace
+							key={`${id}#${nth}`} cardId={id} size="md"
+							pocket={pocket}
+							arrive={arrive}
+							selected={i >= 0 && this.state.selectedHand === i}
+							playable={playable}
+							dragging={i >= 0 && drag?.source === 'hand' && drag.hand === i && dragging}
+							fanIndex={fan} fanCount={myHand.length}
+							onPointerDown={i >= 0 ? (ev: any) => this.startHandDrag(i, id, ev) : undefined}
+							onHold={this.onCardHold}
+							onInspect={this.openInspect}
+						/>;
+					}) : Array.from({ length: pileCount(me.hand) }, (_, i) =>
+						<TcgCardFace key={i} back size="md" />
+					)}
 				</div>
 			</div>
 
@@ -4448,22 +4547,24 @@ export class TcgBoard extends preact.Component<{
 				{startBattle && <button type="button" class="tcg-start" onClick={() => this.choose(startBattle)}>
 					Ready
 				</button>}
-				{endTurn && <button type="button" class="tcg-endturn" onClick={() => {
-					const busy = allActs.some(a =>
-						a.type === 'attack' || a.type === 'ability' || a.type === 'attachZone' ||
-						a.type === 'playBasic' || a.type === 'playTrainer' || a.type === 'playStadium' ||
-						a.type === 'evolve' || a.type === 'attachEnergy' || a.type === 'attachTool' ||
-						a.type === 'retreat' || a.type === 'useStadium'
-					);
-					if (busy) this.setState({ endTurnConfirm: true, menuSlot: null });
-					else this.choose(endTurn);
-				}}>
+				{endTurn && <button
+					type="button" class="tcg-endturn" onClick={() => {
+						const busy = allActs.some(a =>
+							a.type === 'attack' || a.type === 'ability' || a.type === 'attachZone' ||
+							a.type === 'playBasic' || a.type === 'playTrainer' || a.type === 'playStadium' ||
+							a.type === 'evolve' || a.type === 'attachEnergy' || a.type === 'attachTool' ||
+							a.type === 'retreat' || a.type === 'useStadium'
+						);
+						if (busy && !PS.prefs.tcgskipendturn) this.setState({ endTurnConfirm: true, menuSlot: null });
+						else this.choose(endTurn);
+					}}
+				>
 					End<br />Turn
 				</button>}
 			</div>
 
 			{this.state.menuSlot != null && (() => {
-				const slot = this.state.menuSlot!;
+				const slot = this.state.menuSlot;
 				const menu = this.menuActs(slot);
 				const mon = slot === 'active' ? me.active : me.bench[Number(slot)];
 				return <div class="tcg-action-menu" onClick={this.clearSel}>
