@@ -98,7 +98,7 @@
 	0%, 40% { filter: brightness(1.35) saturate(1.4) hue-rotate(-15deg); }
 	100% { filter: none; }
 }
-.tcg-table > *:not(.tcg-felt):not(.tcg-preview):not(.tcg-inspect):not(.tcg-fx-veil):not(.tcg-toast):not(.tcg-modal):not(.tcg-flyer):not(.tcg-banner):not(.fx-layer):not(.tcg-action-menu):not(.tcg-live-controls):not(.tcg-replay-controls):not(.tcg-float-hint):not(.tcg-drag-ghost):not(.tcg-prompt):not(.tcg-arena):not(.tcg-dock-foe):not(.tcg-hud-top):not(.tcg-dock):not(.tcg-wait-banner):not(.tcg-win-banner) {
+.tcg-table > *:not(.tcg-felt):not(.tcg-preview):not(.tcg-inspect):not(.tcg-fx-veil):not(.tcg-toast):not(.tcg-modal):not(.tcg-flyer):not(.tcg-banner):not(.fx-layer):not(.tcg-action-menu):not(.tcg-live-controls):not(.tcg-replay-controls):not(.tcg-float-hint):not(.tcg-drag-ghost):not(.tcg-refuse):not(.tcg-prompt):not(.tcg-arena):not(.tcg-dock-foe):not(.tcg-hud-top):not(.tcg-dock):not(.tcg-wait-banner):not(.tcg-win-banner) {
 	position: relative;
 	z-index: 1;
 }
@@ -1050,6 +1050,12 @@
 	/* top of card sits at the fold; bottom half clipped by the tray */
 	margin-top: 0;
 }
+.tcg-hand-mine .tcg-card-arrive .tcg-card-inner {
+	animation: tcg-card-arrive 0.42s cubic-bezier(.22, .72, .2, 1);
+}
+@keyframes tcg-card-arrive {
+	from { opacity: 0; transform: translateY(16px) scale(0.94); }
+}
 
 .tcg-zone.tcg-bench .tcg-mon:hover { z-index: 2; }
 .tcg-zone.tcg-bench .tcg-card:hover .tcg-card-inner {
@@ -1143,7 +1149,7 @@
 	object-position: center;
 	pointer-events: none;
 	border-radius: inherit;
-	background: #1a1020 url(../sprites/tcg/cardback.webp) center / cover no-repeat;
+	background: #1a1020 url(/fx/tcg/cardback.webp) center / cover no-repeat;
 }
 /* CSS fallback if the image fails to load */
 span.tcg-card-backface {
@@ -1370,6 +1376,23 @@ span.tcg-card-backface {
 .tcg-float.dmg { color: #ff6b6b; }
 .tcg-float.heal { color: #7dffb3; }
 
+.tcg-refuse {
+	position: fixed;
+	z-index: 10060;
+	max-width: 240px;
+	padding: 8px 12px;
+	border-radius: 8px;
+	background: rgba(12, 8, 4, 0.94);
+	border: 1px solid rgba(255, 196, 96, 0.75);
+	color: #ffe9c2;
+	font-size: 9.5pt;
+	font-weight: 700;
+	line-height: 1.35;
+	text-align: center;
+	pointer-events: none;
+	transform: translate(-50%, calc(-100% - 14px));
+	box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+}
 .tcg-float-hint {
 	position: absolute;
 	left: 50%;
@@ -1513,19 +1536,22 @@ span.tcg-card-backface {
 }
 .tcg-replay-controls {
 	position: absolute;
-	left: 8px;
-	bottom: 70px;
-	z-index: 18;
+	left: 50%;
+	bottom: 8px;
+	transform: translateX(-50%);
+	z-index: 24;
 	display: flex;
 	flex-wrap: wrap;
+	justify-content: center;
 	gap: 4px;
-	max-width: min(280px, 70%);
-	pointer-events: auto;
+	max-width: min(420px, 94%);
+	pointer-events: none;
 }
 .tcg-replay-controls .button {
 	font-size: 11px;
 	padding: 4px 8px;
 	margin: 0;
+	pointer-events: auto;
 }
 .tcg-live-controls {
 	position: absolute;
@@ -1918,10 +1944,8 @@ span.tcg-card-backface {
   100% { transform: none; opacity: 1; filter: none; }
 }
 @keyframes fx-switch {
-  0% { transform: translateY(calc(var(--dir) * -54px)) scale(0.86); filter: brightness(1.35); }
-  38% { transform: translateY(calc(var(--dir) * 10px)) scale(1.05); filter: brightness(1.1); }
-  64% { transform: translateY(calc(var(--dir) * -4px)) scale(1.01); }
-  100% { transform: none; filter: none; }
+  0% { filter: brightness(1.2) drop-shadow(0 16px 18px rgba(0, 0, 0, 0.45)); }
+  100% { filter: none; }
 }
 @keyframes fx-ko {
   0% { opacity: 1; transform: none; filter: none; }
@@ -2102,7 +2126,8 @@ span.tcg-card-backface {
 .tcg-mon.fx-hit { animation: fx-hit 0.85s cubic-bezier(.36,.07,.19,.97); transition: none; }
 .tcg-mon.fx-lunge { animation: fx-lunge 0.8s cubic-bezier(.3,.7,.2,1); transition: none; z-index: 5; }
 .tcg-mon.fx-place { animation: fx-place 1.4s cubic-bezier(.2,.8,.2,1) both; z-index: 5; transition: none; }
-.tcg-mon.fx-switch { animation: fx-switch 1.4s cubic-bezier(.2,.85,.2,1) both; z-index: 5; transition: none; }
+.tcg-mon.fx-switch { animation: fx-switch 0.82s ease both; z-index: 6; transition: none; }
+.tcg-mon.is-flipping { z-index: 7; }
 /* Pokémon that move between slots (retreat, promote, bench shifts) glide there (FLIP, see TcgBoard). */
 .tcg-mon.is-flipping { z-index: 4; transition: none; transform-origin: top left; }
 .tcg-mon.fx-evolve { animation: fx-evolve 1.35s cubic-bezier(.2,.75,.2,1); }
@@ -2147,6 +2172,158 @@ span.tcg-card-backface {
 }
 .tcg-mon.fx-pulse, .tcg-mon.fx-ability { animation: fx-pulse 1.15s ease; }
 .tcg-mon.fx-status { animation: fx-status-wobble 0.7s ease; }
+.tcg-mon.fx-psn { animation: fx-psn-shake 1.15s ease; }
+.tcg-mon.fx-brn { animation: fx-brn-shake 1.05s ease; }
+.tcg-mon.fx-slp { animation: none; filter: saturate(0.55) brightness(0.82); }
+.tcg-mon.fx-par { animation: fx-par-jitter 0.7s linear; }
+.tcg-mon.fx-cnf { animation: fx-cnf-sway 1.1s ease; }
+.tcg-mon.fx-psn .tcg-status .psn,
+.tcg-mon.fx-brn .tcg-status .brn,
+.tcg-mon.fx-slp .tcg-status .slp,
+.tcg-mon.fx-par .tcg-status .par,
+.tcg-mon.fx-cnf .tcg-status .cnf {
+	animation: tcg-badge-pop 0.38s cubic-bezier(.2, 1.5, .35, 1) 0.72s both;
+}
+.tcg-sfx {
+	position: absolute;
+	inset: 0;
+	z-index: 7;
+	pointer-events: none;
+	overflow: hidden;
+	border-radius: 8px;
+}
+.tcg-sfx i {
+	position: absolute;
+	left: calc(12% + (var(--i) * 14%));
+	bottom: 8%;
+	opacity: 0;
+}
+.sfx-poisoned {
+	background: radial-gradient(ellipse at 50% 80%, rgba(168, 85, 247, 0.45), transparent 70%);
+	animation: sfx-wash 1.2s ease;
+}
+.sfx-poisoned i {
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	background: radial-gradient(circle at 35% 35%, #f5d0fe, #7e22ce 70%);
+	box-shadow: 0 0 8px #c084fc;
+	animation: sfx-bubble 1.15s ease-out calc(var(--i) * 0.08s) both;
+}
+.sfx-burned {
+	background: radial-gradient(ellipse at 50% 100%, rgba(249, 115, 22, 0.55), transparent 68%);
+	animation: sfx-wash 1.05s ease;
+}
+.sfx-burned i {
+	width: 8px;
+	height: 16px;
+	border-radius: 8px 8px 2px 2px;
+	background: linear-gradient(#fde68a, #f97316 45%, #b91c1c);
+	animation: sfx-flame 0.9s ease-out calc(var(--i) * 0.06s) both;
+}
+.sfx-asleep i {
+	font-style: normal;
+	font-weight: 900;
+	color: #e9d5ff;
+	text-shadow: 0 2px 6px #4c1d95;
+	animation: sfx-zzz 1.3s ease-out calc(var(--i) * 0.22s) both;
+}
+.sfx-asleep i::before { content: 'Z'; font-size: calc(12px + var(--i) * 4px); }
+.sfx-paralyzed {
+	background: repeating-linear-gradient(115deg, transparent 0 8px, rgba(250, 204, 21, 0.35) 8px 10px);
+	animation: sfx-flash 0.7s steps(2) 2;
+}
+.sfx-paralyzed i {
+	width: 3px;
+	height: 70%;
+	top: 15%;
+	background: #facc15;
+	box-shadow: 0 0 8px #fde047;
+	transform: rotate(18deg);
+	animation: sfx-spark 0.45s ease-out calc(var(--i) * 0.05s) both;
+}
+.sfx-confused i {
+	left: 46%;
+	top: 40%;
+	bottom: auto;
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+	background: #fb923c;
+	box-shadow: 0 0 6px #fdba74;
+	animation: sfx-orbit 1.1s linear calc(var(--i) * 0.04s) both;
+}
+.sfx-cured i {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: #fff;
+	box-shadow: 0 0 8px #bbf7d0;
+	animation: sfx-spark 0.7s ease-out calc(var(--i) * 0.06s) both;
+}
+@keyframes fx-psn-shake {
+	0%, 100% { transform: translateX(0); filter: none; }
+	15% { transform: translateX(-3px); filter: hue-rotate(40deg) saturate(1.5); }
+	30% { transform: translateX(3px); filter: hue-rotate(70deg) saturate(1.7) brightness(1.1); }
+	50% { transform: translateX(-2px); filter: hue-rotate(55deg) saturate(1.4); }
+	75% { filter: hue-rotate(20deg) saturate(1.2); }
+}
+@keyframes fx-brn-shake {
+	0%, 100% { filter: none; }
+	25% { filter: sepia(0.5) saturate(1.8) brightness(1.15); }
+	55% { filter: sepia(0.35) saturate(1.5); }
+}
+@keyframes fx-par-jitter {
+	0%, 100% { transform: translate(0, 0); }
+	20% { transform: translate(-2px, 1px); }
+	40% { transform: translate(2px, -2px); }
+	60% { transform: translate(-1px, 2px); }
+	80% { transform: translate(2px, 0); }
+}
+@keyframes fx-cnf-sway {
+	0%, 100% { transform: rotate(0); }
+	25% { transform: rotate(-8deg); }
+	75% { transform: rotate(8deg); }
+}
+@keyframes tcg-badge-pop {
+	0% { transform: scale(0); opacity: 0; }
+	70% { transform: scale(1.25); opacity: 1; }
+	100% { transform: scale(1); opacity: 1; }
+}
+@keyframes sfx-wash {
+	0% { opacity: 0; }
+	25% { opacity: 1; }
+	100% { opacity: 0; }
+}
+@keyframes sfx-bubble {
+	0% { transform: translateY(8px) scale(0.4); opacity: 0; }
+	20% { opacity: 1; }
+	100% { transform: translateY(-78px) scale(1); opacity: 0; }
+}
+@keyframes sfx-flame {
+	0% { transform: translateY(6px) scaleY(0.4); opacity: 0; }
+	25% { opacity: 1; }
+	100% { transform: translateY(-36px) scaleY(1.3); opacity: 0; }
+}
+@keyframes sfx-zzz {
+	0% { transform: translate(0, 10px); opacity: 0; }
+	20% { opacity: 1; }
+	100% { transform: translate(14px, -52px); opacity: 0; }
+}
+@keyframes sfx-spark {
+	0% { opacity: 0; transform: scale(0.2); }
+	30% { opacity: 1; }
+	100% { opacity: 0; transform: scale(1.4); }
+}
+@keyframes sfx-flash {
+	0%, 100% { opacity: 0; }
+	50% { opacity: 1; }
+}
+@keyframes sfx-orbit {
+	0% { transform: rotate(0deg) translateX(18px) rotate(0deg); opacity: 0; }
+	15% { opacity: 1; }
+	100% { transform: rotate(360deg) translateX(22px) rotate(-360deg); opacity: 0; }
+}
 .tcg-mon.fx-heal { animation: fx-heal-glow 1.4s ease; }
 .tcg-mon.fx-energy { animation: fx-energy-glow 1.25s ease; }
 .tcg-mon { position: relative; }
@@ -3685,7 +3862,7 @@ span.tcg-card-backface {
 	.tcg-hand-foe .tcg-card-fan { margin-left: -24px; }
 	.tcg-float-hint { bottom: 64px; font-size: 8pt; max-width: 90%; }
 	.tcg-live-controls { right: 8px; bottom: 64px; }
-	.tcg-replay-controls { bottom: 78px; }
+	.tcg-replay-controls { bottom: 6px; }
 	.fx-draw-rail {
 		left: 6px;
 		max-width: min(320px, 72vw);
@@ -4260,12 +4437,12 @@ span.tcg-card-backface {
 	.tcg-half.me .tcg-side.left,
 	.tcg-half.me .tcg-side.right { justify-content: center; padding: 0; }
 	.tcg-replay-controls {
-		left: 8px;
-		right: 8px;
-		bottom: 68px;
-		max-width: none;
+		left: 50%;
+		right: auto;
+		bottom: 6px;
+		max-width: min(420px, 96%);
 		justify-content: center;
-		z-index: 20;
+		z-index: 24;
 	}
 	.tcg-wait-banner {
 		top: auto;

@@ -6,6 +6,7 @@
 
 import preact from "../js/lib/preact";
 import { PS } from "./client-main";
+import { getTcgCard, loadTcgCardIndex } from "./battle-tcg-deck";
 
 export function isTcgBattleId(id: string): boolean {
 	const format = id.split('-')[1] || '';
@@ -49,10 +50,15 @@ export interface TcgPlayerView {
 	deck: { count: number };
 	discard: string[];
 	prizes?: { count: number };
+	lostZone?: { count: number };
 	stadium?: string | null;
 	setup?: string;
 	energyZone?: { type: string, next?: string, ready?: boolean };
 	points?: number;
+	attachedEnergyThisTurn?: boolean;
+	playedSupporterThisTurn?: boolean;
+	playedStadiumThisTurn?: boolean;
+	retreatedThisTurn?: boolean;
 }
 
 export interface TcgSnapshot {
@@ -154,6 +160,32 @@ function handAsIds(hand: TcgPlayerView['hand']): string[] | null {
 	return Array.isArray(hand) ? hand.slice() : null;
 }
 
+/**
+ * Pre-batch hand indexes stay clickable. Cards that arrived during this batch are shown
+ * with i -1 so a click cannot target a hand the server has not committed yet.
+ */
+function handFan(
+	committed: string[] | null,
+	viewHand: TcgPlayerView['hand'] | undefined,
+): { id: string, i: number, arrive: boolean }[] | null {
+	const viewIds = handAsIds(viewHand ?? null);
+	if (!committed) {
+		return viewIds?.length ? viewIds.map(id => ({ id, i: -1, arrive: true })) : null;
+	}
+	if (!viewIds) return committed.map((id, i) => ({ id, i, arrive: false }));
+	const pool = viewIds.slice();
+	const kept: { id: string, i: number, arrive: boolean }[] = [];
+	for (let i = 0; i < committed.length; i++) {
+		const at = pool.indexOf(committed[i]);
+		if (at < 0) continue;
+		pool.splice(at, 1);
+		kept.push({ id: committed[i], i, arrive: false });
+	}
+	const gained = pool.map(id => ({ id, i: -1, arrive: true }));
+	const fan = kept.concat(gained);
+	return fan.length ? fan : null;
+}
+
 function setHand(p: TcgPlayerView, hand: string[] | { count: number }) {
 	p.hand = hand;
 }
@@ -172,6 +204,32 @@ function removeHandIndex(p: TcgPlayerView, index: number) {
 
 function bumpPile(pile: { count: number } | undefined, delta: number): { count: number } {
 	return { count: Math.max(0, (pile?.count || 0) + delta) };
+}
+
+function takeIds(list: string[] | undefined, ids: string[]): string[] {
+	const left = (list || []).slice();
+	for (const id of ids) {
+		const at = left.indexOf(id);
+		if (at >= 0) left.splice(at, 1);
+	}
+	return left;
+}
+
+function removeHandIds(p: TcgPlayerView, ids: string[]) {
+	const hand = handAsIds(p.hand);
+	if (hand) {
+		setHand(p, takeIds(hand, ids));
+		return;
+	}
+	if (p.hand && typeof p.hand.count === 'number') p.hand = bumpPile(p.hand, -ids.length);
+}
+
+function detachPlayedCards(mon: TcgPokemonView, ids: string[]) {
+	if (mon.energyCards?.length) {
+		mon.energyCards = takeIds(mon.energyCards, ids);
+		mon.energy = mon.energyCards.map(id => energyTypeFromCardId(id));
+	}
+	if (mon.tools?.length) mon.tools = takeIds(mon.tools, ids);
 }
 
 function stubMon(e: TcgEvent): TcgPokemonView {
@@ -238,17 +296,70 @@ function clearPending(snap: TcgSnapshot) {
  * Apply a TcgEvent batch onto a prior snapshot when the server omitted a full board.
  * Same idea as Showdown's battle.ts: each event mutates local state.
  */
+function laterCoversDiscard(events: TcgEvent[], index: number, ids: string[], iid?: string): boolean {
+	const want = new Set(ids.filter(Boolean));
+	if (!want.size && !iid) return false;
+	for (let j = index + 1; j < events.length; j++) {
+		const n = events[j];
+		if (!n || n.type === 'request' || n.type === 'turn') break;
+		if (n.type !== 'toDiscard') continue;
+		if (iid && n.iid === iid) return true;
+		const got = Array.isArray(n.ids) ? n.ids as string[] : [];
+		if (got.some(id => want.has(id))) return true;
+	}
+	return false;
+}
+
+/** One event, with a fallback for replays recorded before toDiscard existed. */
+function applyBatchEvent(snap: TcgSnapshot, events: TcgEvent[], index: number) {
+	const e = events[index];
+	if (!e) return;
+	if (e.type === 'ko' && e.iid) {
+		const found = findMonSlot(snap.players || [], e.iid);
+		const cards = found ?
+			[found.mon.cardId, ...(found.mon.energyCards || []), ...(found.mon.tools || [])].filter(Boolean) as string[] :
+			[];
+		const seat = e.seat as number;
+		applyTcgEvent(snap, e);
+		if (cards.length && !laterCoversDiscard(events, index, cards, e.iid)) {
+			const p = snap.players[seat];
+			if (p) {
+				if (!p.discard) p.discard = [];
+				for (const id of cards) p.discard.push(id);
+			}
+		}
+		return;
+	}
+	if (e.type === 'trainer' && e.cardId && !laterCoversDiscard(events, index, [e.cardId])) {
+		applyTcgEvent(snap, e);
+		const p = snap.players[e.seat as number];
+		if (p) {
+			if (!p.discard) p.discard = [];
+			p.discard.push(e.cardId);
+		}
+		return;
+	}
+	applyTcgEvent(snap, e);
+}
+
 export function applyTcgEvents(
 	base: TcgSnapshot,
 	events: TcgEvent[] | undefined,
 	actions?: TcgAction[],
 ): TcgSnapshot {
 	const snap = cloneTcgSnapshot(base);
-	const players = snap.players || [];
 	const list = events || [];
-	for (let i = 0; i < list.length; i++) {
-		const e = list[i];
-		if (e.type === 'damage' || e.type === 'heal') {
+	for (let i = 0; i < list.length; i++) applyBatchEvent(snap, list, i);
+	if (actions) snap.actions = actions;
+	normalizeTcgEnergy(snap);
+	return snap;
+}
+
+/** One event, in place. Callers clone first when they need to keep the previous board. */
+export function applyTcgEvent(snap: TcgSnapshot, e: TcgEvent) {
+	const players = snap.players || [];
+	if (!e) return;
+	if (e.type === 'damage' || e.type === 'heal') {
 			if (e.iid != null && e.hp != null) {
 				const found = findMonSlot(players, e.iid);
 				if (found) {
@@ -262,12 +373,16 @@ export function applyTcgEvents(
 			if (e.iid != null) {
 				const found = findMonSlot(players, e.iid);
 				if (found) {
-					const s = e.status == null ? null : String(e.status).toLowerCase();
-					if (s === 'poisoned') {
+					const s = e.status == null || e.status === '' ? null : String(e.status).toLowerCase();
+					if (e.poisoned != null || e.burned != null) {
+						found.mon.status = s;
+						found.mon.poisoned = !!e.poisoned || s === 'poisoned';
+						found.mon.burned = !!e.burned || s === 'burned';
+					} else if (s === 'poisoned') {
 						found.mon.poisoned = true;
 					} else if (s === 'burned') {
 						found.mon.burned = true;
-					} else if (s == null || s === '') {
+					} else if (s == null) {
 						found.mon.status = null;
 						found.mon.poisoned = false;
 						found.mon.burned = false;
@@ -284,6 +399,7 @@ export function applyTcgEvents(
 						found.mon.energyCards = [...(found.mon.energyCards || []), e.cardId];
 					}
 					found.mon.energy = [...(found.mon.energy || []), ...energyPipsFromEvent(e)];
+					if (players[found.seat]) players[found.seat].attachedEnergyThisTurn = true;
 				}
 			}
 		} else if (e.type === 'tool') {
@@ -301,8 +417,9 @@ export function applyTcgEvents(
 				if (ids?.length) {
 					const hand = handAsIds(p.hand) || [];
 					setHand(p, hand.concat(ids));
-				} else if (e.type === 'draw' && e.n && !Array.isArray(p.hand)) {
-					p.hand = bumpPile(p.hand as { count: number }, Number(e.n) || 0);
+				} else if (!Array.isArray(p.hand) && p.hand) {
+					const n = e.type === 'draw' ? (Number(e.n) || 0) : Math.max(1, ids?.length || Number(e.n) || 1);
+					if (n) p.hand = bumpPile(p.hand as { count: number }, n);
 				}
 				if (e.type === 'draw' && e.n) p.deck = bumpPile(p.deck, -(Number(e.n) || 0));
 			}
@@ -338,10 +455,16 @@ export function applyTcgEvents(
 		} else if (e.type === 'place') {
 			const p = players[e.seat as number];
 			if (p) {
-				const hide = snap.status === 'setup' && (snap.you == null || e.seat !== snap.you);
-				const mon = hide ?
+				const existing = findMonSlot(players, e.iid)?.mon;
+				const hide = !existing && snap.status === 'setup' && (snap.you == null || e.seat !== snap.you);
+				const mon = existing || (hide ?
 					stubMon({ ...e, faceDown: true, name: 'Pokémon', cardId: '', hp: 0, maxHp: 0 }) :
-					stubMon(e);
+					stubMon(e));
+				if (existing) {
+					if (e.hp != null) existing.hp = Number(e.hp);
+					if (e.maxHp != null) existing.maxHp = Number(e.maxHp);
+					if (e.name) existing.name = e.name;
+				}
 				applyPlace(p, placeSlotOf(e), mon);
 				if (p.setup && p.setup !== 'done' && !p.active) p.setup = 'active';
 				else if (p.setup === 'active') p.setup = 'bench';
@@ -356,27 +479,38 @@ export function applyTcgEvents(
 			}
 		} else if (e.type === 'ko') {
 			const p = players[e.seat as number];
-			if (p && e.iid) {
-				const found = findMonSlot(players, e.iid);
-				if (found) {
-					if (!p.discard) p.discard = [];
-					if (found.mon.cardId) p.discard.push(found.mon.cardId);
-					const tools = found.mon.tools || [];
-					for (let t = 0; t < tools.length; t++) p.discard.push(tools[t]);
-				}
-				dropMonByIid(p, e.iid);
+			if (p && e.iid) dropMonByIid(p, e.iid);
+		} else if (e.type === 'shuffle') {
+			const p = players[e.seat as number];
+			if (p) {
+				if (e.from === 'hand') setHand(p, Array.isArray(p.hand) ? [] : { count: 0 });
+				if (e.deck != null) p.deck = { count: Number(e.deck) };
 			}
+		} else if (e.type === 'toDiscard') {
+			const p = players[e.seat as number];
+			const ids = Array.isArray(e.ids) ? e.ids.filter(Boolean) as string[] : [];
+			if (p && ids.length) {
+				if (e.from === 'hand') removeHandIds(p, ids);
+				if (e.from === 'deck') p.deck = bumpPile(p.deck, -ids.length);
+				if (e.iid) {
+					const found = findMonSlot(players, e.iid);
+					if (found) detachPlayedCards(found.mon, ids);
+				}
+				if (!p.discard) p.discard = [];
+				for (const id of ids) p.discard.push(id);
+			}
+		} else if (e.type === 'toLost') {
+			const p = players[e.seat as number];
+			if (p) p.lostZone = bumpPile(p.lostZone, Number(e.n) || 0);
 		} else if (e.type === 'trainer') {
 			const p = players[e.seat as number];
-			if (p && e.cardId) {
-				if (!p.discard) p.discard = [];
-				p.discard.push(e.cardId);
-			}
+			if (p && e.cardId && cardKind(e.cardId).supporter) p.playedSupporterThisTurn = true;
 		} else if (e.type === 'stadium') {
 			const seat = e.seat as number;
 			for (let s = 0; s < players.length; s++) {
 				if (!players[s]) continue;
 				players[s].stadium = s === seat ? (e.cardId || null) : null;
+				if (s === seat) players[s].playedStadiumThisTurn = true;
 			}
 		} else if (e.type === 'stadiumEnd') {
 			for (let s = 0; s < players.length; s++) {
@@ -413,6 +547,10 @@ export function applyTcgEvents(
 				const p = players[s];
 				if (!p) continue;
 				p.setup = 'done';
+				p.attachedEnergyThisTurn = false;
+				p.playedSupporterThisTurn = false;
+				p.playedStadiumThisTurn = false;
+				p.retreatedThisTurn = false;
 				if (p.active) p.active.faceDown = false;
 				const bench = p.bench || [];
 				for (let j = 0; j < bench.length; j++) {
@@ -437,7 +575,11 @@ export function applyTcgEvents(
 				if (action.type === 'setupDone') p.setup = 'done';
 				if (action.type === 'attachZone' && p.energyZone) {
 					p.energyZone = { ...p.energyZone, ready: false };
+					p.attachedEnergyThisTurn = true;
 				}
+				if (action.type === 'attachEnergy') p.attachedEnergyThisTurn = true;
+				if (action.type === 'retreat') p.retreatedThisTurn = true;
+				if (action.type === 'playStadium') p.playedStadiumThisTurn = true;
 				if (action.type === 'payEnergy' && typeof action.index === 'number') {
 					payEnergyAt(p, action.index);
 				}
@@ -479,10 +621,6 @@ export function applyTcgEvents(
 			if (e.reason) snap.winReason = e.reason;
 			clearPending(snap);
 		}
-	}
-	if (actions) snap.actions = actions;
-	normalizeTcgEnergy(snap);
-	return snap;
 }
 
 type Preview = { cardId: string, image?: string, name?: string };
@@ -490,7 +628,7 @@ type Preview = { cardId: string, image?: string, name?: string };
 /** One replay-player FX beat (Unreal-Bot graphics.js fxFor + hits). */
 type FxHit = {
 	iid: string, amount?: number, kind: 'damage' | 'heal' | 'status',
-	src?: string, label?: string, element?: string,
+	src?: string, label?: string, element?: string, status?: string,
 };
 type FxBeat = {
 	kind: string,
@@ -515,10 +653,12 @@ type FxBeat = {
 	coins?: boolean[],
 	tie?: boolean,
 	element?: string,
+	/** Special Condition being applied. Empty string means it just wore off. */
+	status?: string,
 	slot?: TcgSlot,
 	fromBench?: boolean,
 };
-type PkFx = { cls: string, dataFx?: string, tick?: number, element?: string };
+type PkFx = { cls: string, dataFx?: string, tick?: number, element?: string, status?: string };
 type KoGhost = {
 	iid: string,
 	cardId: string,
@@ -726,10 +866,25 @@ function attackHits(events: TcgEvent[], i: number, players?: TcgPlayerView[]): F
 		if (t === 'request' || t === 'act' || t === 'coin') continue;
 		if (t === 'damage') hits.push({ iid: n.iid, amount: n.amount, kind: 'damage', src, label, element });
 		else if (t === 'heal') hits.push({ iid: n.iid, amount: n.amount, kind: 'heal' });
-		else if (t === 'status') hits.push({ iid: n.iid, kind: 'status' });
+		else if (t === 'status') hits.push({
+			iid: n.iid, kind: 'status',
+			status: n.status == null ? '' : String(n.status).toLowerCase(),
+			label: n.status ? statusWord(String(n.status)) : 'Recovered',
+		});
 		else break;
 	}
 	return hits;
+}
+/** Indexes of the damage / heal / status events attackHits walks, in the same order. */
+function attackHitIndexes(events: TcgEvent[], i: number): number[] {
+	const out: number[] = [];
+	for (let j = i + 1; j < events.length; j++) {
+		const t = events[j]?.type;
+		if (t === 'request' || t === 'act' || t === 'coin') continue;
+		if (t === 'damage' || t === 'heal' || t === 'status') out.push(j);
+		else break;
+	}
+	return out;
 }
 function precededByHandShuffle(events: TcgEvent[], i: number): boolean {
 	const e = events[i];
@@ -762,6 +917,7 @@ function drawCause(
 		if (t === 'request' || t === 'act' || t === 'coin') continue;
 		if (t === 'draw') continue;
 		if (t === 'damage' || t === 'heal' || t === 'status' || t === 'ko' || t === 'place') continue;
+		if (t === 'shuffle' || t === 'toDiscard' || t === 'toLost') continue;
 		if (t === 'turn' || t === 'deal' || t === 'checkup' || t === 'first' || t === 'start' || t === 'over') {
 			return null;
 		}
@@ -817,6 +973,8 @@ function fxDuration(e: TcgEvent): number {
 	if (t === 'draw') return 2400; // effect draws override wait in playFx
 	if (t === 'deal') return 2400;
 	if (t === 'shuffleHand') return 2000;
+	if (t === 'shuffle') return e.from === 'hand' ? 2000 : 700;
+	if (t === 'toDiscard' || t === 'toLost') return 0;
 	if (t === 'trainer' || t === 'stadium') return 3200;
 	if (t === 'stadiumEnd') return 2400;
 	if (t === 'energy' || t === 'tool') return 2400;
@@ -975,6 +1133,32 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?
 		};
 	case 'ko':
 		return { kind: 'ko', label: 'KO', text: `${poke(ev.iid)} was Knocked Out.`, seat: ev.seat };
+	case 'shuffle':
+		return {
+			kind: 'note', label: 'Shuffle',
+			text: ev.from === 'hand' ?
+				`${w(ev.seat)} shuffled their hand into the deck.` :
+				`${w(ev.seat)} shuffled their deck.`,
+			seat: ev.seat,
+		};
+	case 'toDiscard': {
+		const ids = Array.isArray(ev.ids) ? ev.ids.filter(Boolean) : [];
+		const named = ids.length ? ids.map(nm).join(', ') : '';
+		return {
+			kind: 'discard', label: 'Discard',
+			text: named ? `${w(ev.seat)} discarded ${named}.` :
+				`${w(ev.seat)} discarded ${ids.length || 1} card${(ids.length || 1) === 1 ? '' : 's'}.`,
+			seat: ev.seat,
+		};
+	}
+	case 'toLost':
+		return {
+			kind: 'note', label: 'Lost Zone',
+			text: (ev.n || 1) === 1 ?
+				`${w(ev.seat)} put a card in the Lost Zone.` :
+				`${w(ev.seat)} put ${ev.n} cards in the Lost Zone.`,
+			seat: ev.seat,
+		};
 	case 'draw': {
 		const n = ev.n || 1;
 		const ids = Array.isArray(ev.ids) ? ev.ids.filter(Boolean) : [];
@@ -1153,6 +1337,22 @@ function fxFor(
 			message: whoDrew,
 		};
 	}
+	if (e.type === 'shuffle') {
+		if (e.from === 'hand') {
+			return {
+				kind: 'shuffleHand', seat: e.seat, n: 5,
+				extra: 'Shuffled hand into the deck',
+				message: yours(e.seat) ?
+					'You shuffled your hand into the deck' :
+					`${who(e.seat)} shuffled their hand into the deck`,
+			};
+		}
+		return {
+			kind: 'shuffle', seat: e.seat,
+			extra: 'Shuffled their deck',
+			message: yours(e.seat) ? 'You shuffled your deck' : `${who(e.seat)} shuffled their deck`,
+		};
+	}
 	if (e.type === 'shuffleHand') {
 		return {
 			kind: 'shuffleHand', seat: e.seat, n: e.n || 5,
@@ -1183,7 +1383,7 @@ function fxFor(
 	if (e.type === 'points') {
 		const n = e.n || 1;
 		return {
-			kind: 'points', seat: e.seat, n,
+			kind: 'points', seat: e.seat, n, amount: e.total,
 			extra: `+${n}`,
 			message: yours(e.seat) ?
 				`You scored ${n} point${n === 1 ? '' : 's'}` :
@@ -1303,7 +1503,7 @@ function fxFor(
 		iid: e.iid || '',
 		targetIid: e.targetIid || '',
 		seat,
-		amount: e.amount,
+		amount: e.type === 'points' && e.total != null ? e.total : e.amount,
 		n: e.n,
 		extra: e.type === 'coin' ? (e.heads ? 'Heads' : 'Tails') :
 			e.type === 'turn' ? `Turn ${e.number} · ${whoName(players, e.seat)}` :
@@ -1324,7 +1524,18 @@ function fxFor(
 			undefined,
 		cardId: e.cardId || '',
 		coins: e.type === 'coin' ? [!!e.heads] : undefined,
+		status: e.type === 'status' ? (e.status == null ? '' : String(e.status).toLowerCase()) : undefined,
 	};
+}
+
+function statusFxClass(status: string | null | undefined): string {
+	const t = String(status || '').toLowerCase();
+	if (t === 'poisoned') return 'fx-psn';
+	if (t === 'burned') return 'fx-brn';
+	if (t === 'asleep') return 'fx-slp';
+	if (t === 'paralyzed') return 'fx-par';
+	if (t === 'confused') return 'fx-cnf';
+	return 'fx-cured';
 }
 
 function pkClass(fx: FxBeat): string {
@@ -1343,11 +1554,15 @@ function pkClass(fx: FxBeat): string {
 
 function buildPkFx(fx: FxBeat, tick = 0): { [iid: string]: PkFx } {
 	const out: { [iid: string]: PkFx } = {};
-	const put = (iid: string | undefined, cls: string, dataFx?: string, element?: string) => {
+	const put = (
+		iid: string | undefined, cls: string, dataFx?: string, element?: string, status?: string,
+	) => {
 		if (!iid) return;
-		out[iid] = { cls, dataFx, tick, element };
+		out[iid] = { cls, dataFx, tick, element, status };
 	};
-	if (fx.iid) {
+	if (fx.kind === 'status' && fx.iid) {
+		put(fx.iid, `fx-status ${statusFxClass(fx.status)}`, undefined, undefined, fx.status ?? '');
+	} else if (fx.iid) {
 		let dataFx = '';
 		if (fx.kind === 'damage' && fx.amount) dataFx = `-${fx.amount}`;
 		if (fx.kind === 'heal' && fx.amount) dataFx = `+${fx.amount}`;
@@ -1362,10 +1577,26 @@ function buildPkFx(fx: FxBeat, tick = 0): { [iid: string]: PkFx } {
 		const dataFx = h.kind === 'damage' && h.amount ? `-${h.amount}` :
 			h.kind === 'heal' && h.amount ? `+${h.amount}` : undefined;
 		const src = h.src || fx.src;
-		const cls = `${h.kind === 'heal' ? 'fx-heal' : h.kind === 'status' ? 'fx-status' : 'fx-hit'}${src ? ` src-${src}` : ''}`;
-		put(h.iid, cls, dataFx, h.kind === 'damage' ? (h.element || fx.element) : undefined);
+		const cls = h.kind === 'heal' ? 'fx-heal' :
+			h.kind === 'status' ? `fx-status ${statusFxClass(h.status)}` : 'fx-hit';
+		put(
+			h.iid,
+			`${cls}${src ? ` src-${src}` : ''}`,
+			dataFx,
+			h.kind === 'damage' ? (h.element || fx.element) : undefined,
+			h.kind === 'status' ? (h.status ?? '') : undefined,
+		);
 	}
 	return out;
+}
+
+/** On-card Special Condition. The badge pops in after this plays. */
+function StatusBurst(props: { kind: string }) {
+	const kind = props.kind || 'cured';
+	const n = kind === 'asleep' ? 3 : kind === 'cured' ? 4 : 6;
+	return <div class={`tcg-sfx sfx-${kind}`} aria-hidden="true">
+		{Array.from({ length: n }, (_, i) => <i key={i} style={{ '--i': String(i) } as any} />)}
+	</div>;
 }
 
 function TypeHit(props: { type: string, tick?: number }) {
@@ -1526,6 +1757,9 @@ class FxOverlay extends preact.Component<{
 		if (k === 'shuffleHand') {
 			// Motion lives on the real hand (`.is-shuffling`); layer only marks the beat for CSS.
 			return wrap('shuffleHand', <></>);
+		}
+		if (k === 'shuffle') {
+			return wrap('shuffle', cap('SHUFFLE', 'Deck'));
 		}
 		if (k === 'search') {
 			// Your own search is a prompt; don't cover the picker with a board-wide status card.
@@ -1747,19 +1981,12 @@ export function cardArt(cardId: string, opts?: { large?: boolean, pocket?: boole
 	return scrydexArt(cardId, large);
 }
 
-/** Official-style English TCG card back (face-down hand / deck / prizes). */
+/** Face-down card back shipped with this client (fx/ is tracked; sprites/ is not). */
 export function cardBackArt(): string {
-	// Never use Dex.resourcePrefix — it points at play.pokemonshowdown.com, which
-	// does not host our local sprites/tcg asset. Resolve against the current page.
-	try {
-		const base = (typeof document !== 'undefined' && document.baseURI) ||
-			(typeof location !== 'undefined' ? location.href : '');
-		if (base) return new URL('sprites/tcg/cardback.webp', base).href;
-	} catch {}
-	return 'sprites/tcg/cardback.webp';
+	return '/fx/tcg/cardback.webp';
 }
 
-const CARD_BACK_FALLBACK = 'https://archives.bulbagarden.net/media/upload/1/17/Cardback.jpg';
+const CARD_BACK_FALLBACK = '/fx/tcg/cardback.jpg';
 
 function CardBackFace() {
 	return <img
@@ -1891,6 +2118,221 @@ function canDropAnywhere(acts: TcgAction[], drag: DragSource, drop: DropTarget):
 	return actionsForDrop(acts, drag, drop).length > 0;
 }
 
+type CardKind = {
+	known: boolean,
+	pokemon: boolean,
+	trainer: boolean,
+	energy: boolean,
+	basic: boolean,
+	stage: boolean,
+	supporter: boolean,
+	item: boolean,
+	stadium: boolean,
+	tool: boolean,
+};
+
+function cardKind(id: string): CardKind {
+	const c = id ? getTcgCard(id) : undefined;
+	const subs = (c?.u || []).map(s => s.toLowerCase());
+	const has = (name: string) => subs.indexOf(name) >= 0;
+	return {
+		known: !!c,
+		pokemon: c?.s === 'P',
+		trainer: c?.s === 'T',
+		energy: c?.s === 'E' || /energy/i.test(id) || /^sve-\d+$/i.test(id),
+		basic: has('basic'),
+		stage: subs.some(s => s.indexOf('stage') === 0),
+		supporter: has('supporter'),
+		item: has('item'),
+		stadium: has('stadium'),
+		tool: has('pokémon tool') || has('pokemon tool') || has('tool'),
+	};
+}
+
+type WhyCtx = {
+	hand?: number,
+	drop?: DropTarget | null,
+	slot?: TcgSlot,
+	foe?: boolean,
+	zone?: boolean,
+	source?: 'hand' | 'zone',
+};
+
+function handCardId(snap: TcgSnapshot, hand: number): string {
+	const you = snap.you;
+	if (you == null) return '';
+	const handv = snap.players[you]?.hand;
+	return Array.isArray(handv) ? (handv[hand] || '') : '';
+}
+
+function benchFull(p: TcgPlayerView | undefined, snap: TcgSnapshot): boolean {
+	const size = snap.format?.benchSize || (snap.format?.energyZone ? 3 : 5);
+	return (p?.bench || []).filter(Boolean).length >= size;
+}
+
+function firstPlayerTurn(snap: TcgSnapshot): boolean {
+	return snap.status === 'playing' && snap.turnNumber === 1 && snap.turn === snap.you;
+}
+
+/** Why this attempt is illegal. Empty when the attempt is legal, or when nothing was attempted. */
+function whyCant(snap: TcgSnapshot, ctx: WhyCtx, waiting?: boolean): string {
+	const you = snap.you;
+	if (you == null) return '';
+	if (snap.status === 'gameover' || snap.winner != null) return 'The game is over.';
+	if (waiting) return 'Wait for the animation to finish.';
+	if (snap.pendingPrize && snap.pendingPrize.seat === you) return 'Take a Prize card first.';
+	if (snap.pendingSearch) return 'Finish searching your deck first.';
+	if (snap.pendingDiscard) return 'Choose a card to discard first.';
+	if (snap.pendingRetreatPay) return 'Choose Energy to discard for the retreat.';
+	if (snap.pendingConfirm) return 'Confirm this effect first.';
+	if (snap.pendingPromote != null && snap.pendingPromote === you && ctx.slot == null) {
+		return 'Choose a Pokémon to promote first.';
+	}
+	if (snap.pendingFirst === you) return 'Choose who goes first.';
+	if (snap.status === 'playing' && snap.turn !== you) return "It's not your turn.";
+
+	if (ctx.zone || ctx.source === 'zone') {
+		if (ctx.drop) {
+			if (actionsForDrop(snap.actions || [], { source: 'zone' }, ctx.drop).length) return '';
+			return whyBadDrop(snap, { ...ctx, source: 'zone' });
+		}
+		if ((snap.actions || []).some(a => a.type === 'attachZone')) return 'Drop this Energy on one of your Pokémon.';
+		return whyZone(snap);
+	}
+	if (ctx.hand != null) {
+		const drag: DragSource = { source: 'hand', hand: ctx.hand };
+		if (ctx.drop) {
+			if (actionsForDrop(snap.actions || [], drag, ctx.drop).length) return '';
+			return whyBadDrop(snap, { ...ctx, source: 'hand' });
+		}
+		const mine = (snap.actions || []).filter(a => a.hand === ctx.hand);
+		if (!mine.length) return whyCard(snap, handCardId(snap, ctx.hand));
+		return whereToPlay(mine);
+	}
+	if (ctx.slot != null) return whyMon(snap, ctx.slot);
+	return '';
+}
+
+function whereToPlay(acts: TcgAction[]): string {
+	const types: { [k: string]: true } = {};
+	for (const a of acts) types[a.type] = true;
+	if (types['attachEnergy'] || types['attachTool']) return 'Drop this on one of your Pokémon.';
+	if (types['evolve']) return 'Drop this on the Pokémon it evolves from.';
+	if (types['playBasic'] || types['setBench'] || types['setActive'] || types['mulliganBench']) {
+		return 'Drop this on an empty spot on your side.';
+	}
+	if (types['playStadium']) return 'Drop this on the Stadium spot.';
+	if (types['discardPick']) return 'Drop this on the discard pile.';
+	if (types['playTrainer']) return 'Drop this on the play area.';
+	return 'Drop this on a valid target.';
+}
+
+function whyZone(snap: TcgSnapshot): string {
+	const me = snap.you != null ? snap.players[snap.you] : undefined;
+	if (snap.status === 'setup') return "You can't attach Energy during setup.";
+	if (firstPlayerTurn(snap) && snap.format?.energyZone) return "You can't attach Energy on your first turn.";
+	if (me?.attachedEnergyThisTurn) return 'You already attached Energy this turn.';
+	if (me?.energyZone && me.energyZone.ready === false) return 'You already attached Energy this turn.';
+	return "You can't attach Energy right now.";
+}
+
+function whyCard(snap: TcgSnapshot, id: string): string {
+	const me = snap.you != null ? snap.players[snap.you] : undefined;
+	const k = cardKind(id);
+	const pocket = !!snap.format?.energyZone;
+	if (snap.status === 'setup') {
+		if (!(k.pokemon && k.basic)) return 'During setup you can only play Basic Pokémon.';
+		if (me?.active && benchFull(me, snap)) return 'Your Bench is full.';
+		return "You can't play this Pokémon right now.";
+	}
+	if (k.supporter) {
+		if (me?.playedSupporterThisTurn) return 'You already played a Supporter this turn.';
+		if (firstPlayerTurn(snap)) return "You can't play a Supporter on your first turn.";
+	}
+	if (k.stadium && me?.playedStadiumThisTurn) return 'You already played a Stadium this turn.';
+	if (k.energy) {
+		if (me?.attachedEnergyThisTurn) return 'You already attached Energy this turn.';
+		if (firstPlayerTurn(snap) && pocket) return "You can't attach Energy on your first turn.";
+		return "You can't attach Energy right now.";
+	}
+	if (k.stage) {
+		if (firstPlayerTurn(snap)) return "You can't evolve on your first turn.";
+		return "This card can't evolve any of your Pokémon right now.";
+	}
+	if (k.pokemon && k.basic) {
+		if (me?.active && benchFull(me, snap)) return 'Your Bench is full.';
+		return "You can't play this Pokémon right now.";
+	}
+	if (k.tool) return "You can't attach this Tool right now.";
+	return "You can't play this card right now.";
+}
+
+function whyBadDrop(snap: TcgSnapshot, ctx: WhyCtx): string {
+	const drop = ctx.drop;
+	if (!drop) return '';
+	const fromZone = ctx.source === 'zone';
+	const id = fromZone || ctx.hand == null ? '' : handCardId(snap, ctx.hand);
+	const k = cardKind(id);
+	const acts = (snap.actions || []).filter(a => fromZone ? a.type === 'attachZone' : a.hand === ctx.hand);
+	if (!acts.length) return fromZone ? whyZone(snap) : whyCard(snap, id);
+	if (drop.kind === 'discard') return "You're not discarding a card right now.";
+	if (drop.kind === 'stadium') {
+		return k.stadium ? "You can't play that Stadium right now." : 'Only Stadium cards go on the Stadium spot.';
+	}
+	if (drop.kind === 'play') {
+		if (k.pokemon || fromZone) return fromZone ? 'Drop this Energy on one of your Pokémon.' : 'Drop this Pokémon on an empty spot on your side.';
+		if (k.energy) return 'Drop this Energy on one of your Pokémon.';
+		if (k.stadium) return 'Drop Stadium cards on the Stadium spot.';
+		if (k.tool) return 'Drop this Tool on one of your Pokémon.';
+		return "You can't play this card there.";
+	}
+	if (drop.foe) {
+		if (k.energy || fromZone) return 'Energy attaches to your own Pokémon.';
+		if (k.pokemon) return 'Play this on your side of the board.';
+		if (k.tool) return 'Tools attach to your own Pokémon.';
+		return "This card can't target that Pokémon.";
+	}
+	if (drop.empty) {
+		if (k.stage) return 'Drop this on the Pokémon it evolves from.';
+		if (k.energy || fromZone) return 'Drop Energy on a Pokémon, not an empty spot.';
+		if (k.trainer || k.tool) return "This card doesn't play onto an empty spot.";
+		if (drop.slot === 'active') return "This can't be your Active Pokémon.";
+		return 'That Bench spot is not open for this card.';
+	}
+	if (k.basic && !k.stage) return 'That spot is taken.';
+	if (k.stage) return "This card can't evolve that Pokémon.";
+	if (k.energy || fromZone) {
+		return acts.some(a => a.type === 'attachEnergy' || a.type === 'attachZone') ?
+			"You can't attach Energy to that Pokémon." :
+			(fromZone ? whyZone(snap) : whyCard(snap, id));
+	}
+	if (k.tool) return "You can't attach this Tool to that Pokémon.";
+	if (k.stadium) return 'Drop Stadium cards on the Stadium spot.';
+	if (k.trainer) return "This card can't target that Pokémon.";
+	return "You can't play this card there.";
+}
+
+function whyMon(snap: TcgSnapshot, slot: TcgSlot): string {
+	const me = snap.you != null ? snap.players[snap.you] : undefined;
+	const mon = slot === 'active' ? me?.active : me?.bench?.[Number(slot)];
+	if (!mon) return '';
+	if (snap.status === 'setup') return 'Finish setting up your Pokémon first.';
+	if (slot !== 'active') {
+		if (snap.pendingPromote != null && snap.pendingPromote === snap.you) {
+			return 'Choose a different Pokémon to promote.';
+		}
+		return "This Pokémon can't use an Ability right now.";
+	}
+	const st = String(mon.status || '').toLowerCase();
+	if (st === 'asleep' || st === 'paralyzed') {
+		return `This Pokémon is ${statusWord(st)} and can't attack or retreat.`;
+	}
+	if (firstPlayerTurn(snap)) return "You can't attack on your first turn.";
+	if (me?.retreatedThisTurn) return "You already retreated, and this Pokémon can't attack right now.";
+	if (!(mon.energy || []).length) return "This Pokémon doesn't have enough Energy to attack.";
+	return "This Pokémon can't attack or retreat right now.";
+}
+
 function sameDrop(a: DropTarget | null, b: DropTarget | null): boolean {
 	if (!a || !b) return a === b;
 	if (a.kind !== b.kind) return false;
@@ -2000,7 +2442,7 @@ export function describeAction(a: TcgAction, snap: TcgSnapshot): string {
 
 class TcgCardFace extends preact.Component<{
 	cardId?: string, image?: string, name?: string, size?: CardSize, selected?: boolean,
-	back?: boolean, playable?: boolean, fanIndex?: number, fanCount?: number,
+	back?: boolean, playable?: boolean, arrive?: boolean, fanIndex?: number, fanCount?: number,
 	dragging?: boolean, pocket?: boolean,
 	onClick?: () => void,
 	onInspect?: (p: Preview) => void,
@@ -2096,7 +2538,7 @@ class TcgCardFace extends preact.Component<{
 	};
 	override render() {
 		const {
-			cardId, image, name, size, selected, back, playable, fanIndex, fanCount, dragging,
+			cardId, image, name, size, selected, back, playable, arrive, fanIndex, fanCount, dragging,
 			pocket, onInspect,
 		} = this.props;
 		const src = image || (cardId ? cardArt(cardId, pocket ? { pocket: true } : undefined) : '');
@@ -2106,6 +2548,7 @@ class TcgCardFace extends preact.Component<{
 			back ? 'tcg-card-back' : '',
 			this.props.onClick || this.props.onPointerDown || onInspect ? 'tcg-card-click' : '',
 			playable ? 'tcg-card-playable' : '',
+			arrive ? 'tcg-card-arrive' : '',
 			dragging ? 'tcg-card-dragging' : '',
 			fanCount ? 'tcg-card-fan' : '',
 		].filter(Boolean).join(' ');
@@ -2140,7 +2583,7 @@ class TcgMon extends preact.Component<{
 	dropOk?: boolean, dropHot?: boolean, dropLabel?: string,
 	/** Just flipped face up (end of setup). */
 	reveal?: boolean,
-	onClick?: () => void, onInspect?: (p: Preview) => void,
+	onClick?: (ev?: MouseEvent) => void, onInspect?: (p: Preview) => void,
 }> {
 	baseEl: HTMLElement | null = null;
 	holdTimer: number | null = null;
@@ -2171,7 +2614,7 @@ class TcgMon extends preact.Component<{
 			ev.stopPropagation();
 			return;
 		}
-		this.props.onClick?.();
+		this.props.onClick?.(ev);
 	};
 
 	hpEl: HTMLElement | null = null;
@@ -2310,6 +2753,7 @@ class TcgMon extends preact.Component<{
 				<div class="tcg-status">
 					{statusBadges(mon).map(b => <span key={b.id} class={b.id} title={b.title}>{b.label}</span>)}
 				</div>}
+			{pkFx?.status != null && <StatusBurst kind={pkFx.status} />}
 			{pkFx?.element && <TypeHit type={pkFx.element} tick={pkFx.tick} />}
 			{dropHot && dropLabel && <em class="tcg-drop-tag">{dropLabel}</em>}
 		</div>;
@@ -2406,10 +2850,19 @@ export class TcgBoard extends preact.Component<{
 		 * pre-batch snapshot so the board reacts at the beat instead of at commit:
 		 * cards leave your hand as they are played, HP drops with each hit, energy lands.
 		 */
-		live: { hand: {}, hp: {}, energy: {} } as {
+		/** Pokémon that left Active for the Bench slot the switcher came from. */
+		placeOut: null as { seat: number, slot: TcgSlot, mon: TcgPokemonView } | null,
+		live: { hand: {}, hp: {}, energy: {}, prizes: {}, deck: {}, handN: {}, discardN: {}, points: {}, gained: {} } as {
 			hand: { [cardId: string]: number },
 			hp: { [iid: string]: number },
 			energy: { [iid: string]: string[] },
+			prizes: { [seat: number]: number },
+			deck: { [seat: number]: number },
+			handN: { [seat: number]: number },
+			discardN: { [seat: number]: number },
+			points: { [seat: number]: number },
+			/** Card ids that entered your hand on a beat already playing (draw, prize, search). */
+			gained: { [seat: number]: string[] },
 		},
 		/** fxKey the live overlay was built for; an overlay from an earlier batch is ignored. */
 		liveKey: -1,
@@ -2422,6 +2875,8 @@ export class TcgBoard extends preact.Component<{
 		 */
 		prizeTakenLocal: 0,
 		drag: null as DragState | null,
+		/** Why the play the player just tried is illegal, anchored at the pointer. */
+		refuse: null as { text: string, x: number, y: number } | null,
 	};
 	timer: number | null = null;
 	tableEl: HTMLElement | null = null;
@@ -2466,6 +2921,7 @@ export class TcgBoard extends preact.Component<{
 	}
 
 	override componentDidMount() {
+		void loadTcgCardIndex();
 		this.stashHands(this.props.snapshot);
 		this.playFx(this.props.events);
 		window.addEventListener('pointermove', this.onDragMove);
@@ -2520,7 +2976,7 @@ export class TcgBoard extends preact.Component<{
 				{ transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`, filter: 'drop-shadow(0 10px 10px rgba(0,0,0,0.35))' },
 				{ transform: `translate(${dx * 0.4}px, ${dy * 0.4}px) scale(${1 + (sx - 1) * 0.4}, ${1 + (sy - 1) * 0.4})`, filter: 'drop-shadow(0 14px 14px rgba(0,0,0,0.4))', offset: 0.5 },
 				{ transform: 'translate(0, 0) scale(1, 1)', filter: 'drop-shadow(0 0 0 rgba(0,0,0,0))' },
-			], { duration: 520, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'none' });
+			], { duration: 820, easing: 'cubic-bezier(.22,.72,.2,1)', fill: 'both' });
 			const done = () => el.classList.remove('is-flipping');
 			anim.onfinish = done;
 			anim.oncancel = done;
@@ -2560,6 +3016,7 @@ export class TcgBoard extends preact.Component<{
 		this.fxPending = [];
 		this.fxBusy = false;
 		if (this.timer != null) window.clearTimeout(this.timer);
+		this.stopRefuseTimer();
 		window.removeEventListener('pointermove', this.onDragMove);
 		window.removeEventListener('pointerup', this.onDragEnd);
 		window.removeEventListener('pointercancel', this.onDragEnd);
@@ -2572,8 +3029,9 @@ export class TcgBoard extends preact.Component<{
 
 	clearFx() {
 		if (this.state.fx?.kind === 'ko' && this.state.fx.iid) delete this.freshOut[this.state.fx.iid];
-		this.liveNow = { hand: {}, hp: {}, energy: {} };
-		this.setState({ fx: null, pkFx: {}, koGhost: null, koHide: {}, placeIn: null, live: this.liveNow });
+		this.boardSnap = null;
+		this.liveNow = { hand: {}, hp: {}, energy: {}, prizes: {}, deck: {}, handN: {}, discardN: {}, points: {}, gained: {} };
+		this.setState({ fx: null, pkFx: {}, koGhost: null, koHide: {}, placeIn: null, placeOut: null, live: this.liveNow });
 	}
 
 	/**
@@ -2581,46 +3039,46 @@ export class TcgBoard extends preact.Component<{
 	 * snapshot already includes everything earlier batches animated, so carrying the
 	 * old overlay over would subtract that damage (or remove that hand card) twice.
 	 */
-	liveNow: TcgBoard['state']['live'] = { hand: {}, hp: {}, energy: {} };
-	static readonly NO_LIVE: TcgBoard['state']['live'] = { hand: {}, hp: {}, energy: {} };
-	/** The overlay to render with: only while a beat of the current batch is on screen. */
-	liveOverlay() {
-		if (!this.state.fx || this.state.liveKey !== this.props.fxKey) return TcgBoard.NO_LIVE;
-		return this.state.live;
+	liveNow: TcgBoard['state']['live'] = {
+		hand: {}, hp: {}, energy: {}, prizes: {}, deck: {}, handN: {}, discardN: {}, points: {}, gained: {},
+	};
+	static readonly NO_LIVE: TcgBoard['state']['live'] = {
+		hand: {}, hp: {}, energy: {}, prizes: {}, deck: {}, handN: {}, discardN: {}, points: {}, gained: {},
+	};
+	/**
+	 * Snapshot after every event whose beat has started. The committed snapshot stays
+	 * put until the batch ends, so piles, the hand, the turn badge, and the board
+	 * read this instead of waiting for that commit.
+	 */
+	boardSnap: TcgSnapshot | null = null;
+	/** Last index of `events` already applied onto boardSnap. Reset when the array changes. */
+	foldedThrough = -1;
+	foldedRequest = false;
+	foldEvents(events: TcgEvent[], inclusiveIndex: number) {
+		if (inclusiveIndex < 0) return;
+		// First paint already is the post-batch board; folding the same events would double them.
+		if (this.props.snapshot === this.props.fxSnapshot) return;
+		if (!this.boardSnap) {
+			this.boardSnap = cloneTcgSnapshot(this.props.snapshot);
+			this.foldedThrough = -1;
+		}
+		const board = this.boardSnap;
+		const from = this.foldedThrough + 1;
+		if (inclusiveIndex < from) return;
+		for (let k = from; k <= inclusiveIndex && k < events.length; k++) {
+			applyBatchEvent(board, events, k);
+			if (events[k].type === 'request' && this.props.fxSnapshot?.actions) {
+				board.actions = this.props.fxSnapshot.actions;
+				this.foldedRequest = true;
+			}
+		}
+		normalizeTcgEnergy(board);
+		this.foldedThrough = Math.min(inclusiveIndex, events.length - 1);
 	}
 	/** Fold a beat that is now playing into the live overlay (see state.live). */
-	applyLive(fx: FxBeat, you: number | null | undefined) {
-		const live = {
-			hand: { ...this.liveNow.hand },
-			hp: { ...this.liveNow.hp },
-			energy: { ...this.liveNow.energy },
-		};
-		const oldPlayers = this.props.snapshot.players;
-		const finalPlayers = this.props.fxSnapshot?.players || oldPlayers;
-		const fromHand = fx.kind === 'energy' || fx.kind === 'tool' || fx.kind === 'trainer' ||
-			fx.kind === 'stadium' || fx.kind === 'evolve' || (fx.kind === 'place' && !fx.fromBench);
-		// Attach events carry the target Pokémon, not always the seat; the owner of the target played it.
-		const seat = fx.seat ?? (fx.iid ? findMonSlot(oldPlayers, fx.iid)?.seat : undefined);
-		if (fromHand && fx.cardId && actorIsYou(seat, you)) {
-			live.hand[fx.cardId] = (live.hand[fx.cardId] || 0) + 1;
-		}
-		const hits = fx.hits?.length ? fx.hits : (fx.kind === 'damage' || fx.kind === 'heal') && fx.iid ?
-			[{ iid: fx.iid, amount: fx.amount, kind: fx.kind }] : [];
-		hits.forEach(h => {
-			if (h.kind !== 'damage' && h.kind !== 'heal') return;
-			const mon = findMonView(oldPlayers, h.iid);
-			if (!mon || !h.amount) return;
-			const cur = live.hp[h.iid] ?? mon.hp;
-			live.hp[h.iid] = h.kind === 'damage' ?
-				Math.max(0, cur - h.amount) :
-				Math.min(mon.maxHp || cur + h.amount, cur + h.amount);
-		});
-		if ((fx.kind === 'energy' || fx.kind === 'tool') && fx.iid) {
-			const after = findMonView(finalPlayers, fx.iid);
-			if (after?.energy) live.energy[fx.iid] = after.energy;
-		}
-		this.liveNow = live;
-		return live;
+	applyLive(_fx: FxBeat, _you: number | null | undefined) {
+		// Pile counts, HP, and the hand come from boardSnap. A second overlay would add them twice.
+		return TcgBoard.NO_LIVE;
 	}
 
 	noteRemovals(snap: TcgSnapshot) {
@@ -2697,17 +3155,14 @@ export class TcgBoard extends preact.Component<{
 
 	displayMon(seat: number, slot: TcgSlot, live: TcgPokemonView | null): TcgPokemonView | null {
 		const placed = this.state.placeIn;
+		const displaced = this.state.placeOut;
 		if (placed && placed.seat === seat && sameSlot(placed.slot, slot)) return placed.mon;
+		if (displaced && displaced.seat === seat && sameSlot(displaced.slot, slot)) return displaced.mon;
 		// Keep the real card through the KO. Swapping it for a copy made it vanish and pop back.
 		if (live && this.state.koHide[live.iid]) return null;
 		if (live && placed && live.iid === placed.mon.iid) return null;
-		if (live) {
-			const overlay = this.liveOverlay();
-			const hp = overlay.hp[live.iid];
-			const energy = overlay.energy[live.iid];
-			if (hp == null && !energy) return live;
-			return { ...live, hp: hp ?? live.hp, energy: energy || live.energy };
-		}
+		if (live && displaced && live.iid === displaced.mon.iid) return null;
+		if (live) return live;
 		const g = this.state.koGhost;
 		if (g && g.seat === seat && sameSlot(g.slot, slot)) {
 			return {
@@ -2790,18 +3245,28 @@ export class TcgBoard extends preact.Component<{
 		if (this.fxPending.length) {
 			const next = this.fxPending;
 			this.fxPending = [];
-			this.runFx(next);
+			this.runFx(next, false);
 			return;
 		}
+		// Drop the in-progress board before commit paints the server snapshot.
+		this.boardSnap = null;
+		this.foldedThrough = -1;
+		this.foldedRequest = false;
 		this.fxBusy = false;
 		const more = this.props.onFxDone?.() ?? false;
 		if (!more) this.clearFx();
 	}
 
-	runFx(events: TcgEvent[]) {
+	runFx(events: TcgEvent[], fresh = true) {
 		if (this.timer != null) window.clearTimeout(this.timer);
 		// New batch, new baseline: props.snapshot now already reflects the previous batch.
-		this.liveNow = { hand: {}, hp: {}, energy: {} };
+		// A continuation (events that arrived mid-beat) keeps the board those beats already built.
+		if (fresh) {
+			this.boardSnap = null;
+			this.foldedRequest = false;
+			this.liveNow = { hand: {}, hp: {}, energy: {}, prizes: {}, deck: {}, handN: {}, discardN: {}, points: {}, gained: {} };
+		}
+		this.foldedThrough = -1;
 		const shown = this.props.fxSnapshot || this.props.snapshot;
 		const players = shown.players;
 		const you = shown.you;
@@ -2812,9 +3277,18 @@ export class TcgBoard extends preact.Component<{
 		const BEAT_MS = 1600;
 
 		const show = (fx: FxBeat, e?: TcgEvent) => {
+			if (e?.type === 'deal' && you != null) {
+				const raw = (you === 0 ? e.ids0 : e.ids1) as string[] | undefined;
+				const ids = Array.isArray(raw) ? raw.filter(Boolean) : [];
+				if (ids.length) fx = { ...fx, ids, seat: you };
+			} else if (e && Array.isArray(e.ids) && e.ids.length &&
+				(e.type === 'draw' || e.type === 'find' || e.type === 'prizeTake')) {
+				fx = { ...fx, ids: (e.ids as string[]).filter(Boolean), seat: fx.seat ?? (e.seat as number) };
+			}
 			fxTick++;
 			let koGhost: KoGhost | null = null;
 			let placeIn: TcgBoard['state']['placeIn'] = null;
+			let placeOut: TcgBoard['state']['placeOut'] = null;
 			const koHide = { ...this.state.koHide };
 			const koStillQueued = (this.props.events || []).some(ev => ev.type === 'ko' && ev.iid && this.freshOut[ev.iid]);
 			if (!koStillQueued && fx.kind !== 'ko' && fx.kind !== 'damage' && fx.kind !== 'attack' && fx.kind !== 'ability') {
@@ -2847,9 +3321,15 @@ export class TcgBoard extends preact.Component<{
 				const fromOld = findMonSlot(this.props.snapshot.players, fx.iid);
 				fx.fromBench = !!(fromOld && fromOld.slot !== 'active' && slot === 'active');
 				if (incoming) placeIn = { seat, slot, mon: incoming };
+				if (fx.fromBench && fromOld) {
+					const leaving = this.props.snapshot.players[seat]?.active;
+					if (leaving && leaving.iid !== incoming?.iid) {
+						placeOut = { seat, slot: fromOld.slot, mon: leaving };
+					}
+				}
 			}
 			this.setState({
-				fx, pkFx: buildPkFx(fx, fxTick), koGhost, koHide, placeIn,
+				fx, pkFx: buildPkFx(fx, fxTick), koGhost, koHide, placeIn, placeOut,
 				live: this.applyLive(fx, you), liveKey: this.props.fxKey,
 			});
 		};
@@ -2857,6 +3337,11 @@ export class TcgBoard extends preact.Component<{
 		const step = () => {
 			while (i < events.length && skipEvent(events, i)) {
 				this.props.onEvent?.(events[i]);
+				// Damage and heal after an attack land in playHit, when the hit connects.
+				const skipped = events[i].type;
+				if (skipped !== 'damage' && skipped !== 'heal' && skipped !== 'status') {
+					this.foldEvents(events, i);
+				}
 				i++;
 			}
 			if (i >= events.length) {
@@ -2892,10 +3377,12 @@ export class TcgBoard extends preact.Component<{
 						'You shuffled your hand into the deck' :
 						`${actorLabel(players, e.seat, you)} shuffled their hand into the deck`,
 				};
+				this.foldEvents(events, i - 1);
 				show(shuffleFx);
 				this.timer = window.setTimeout(() => {
 					// Keep pre-draw hand memory until after this beat so inferDrawnIds still works
 					// if ids were stripped — then refresh for later FX.
+					this.foldEvents(events, i);
 					show(fx, e);
 					this.stashHands(this.props.snapshot);
 					i++;
@@ -2959,6 +3446,7 @@ export class TcgBoard extends preact.Component<{
 							(results[0] ? 'Heads!' : 'Tails!') :
 							`${headsN} Heads · ${tailsN} Tails`),
 				};
+				this.foldEvents(events, j - 1);
 				show(coinFx);
 				// Flip (~1.55s) + stagger + hold; linger a bit longer for the first-player announce.
 				const wait = (firstEv ? 2700 : 2200) + Math.max(0, results.length - 1) * 200;
@@ -2967,8 +3455,54 @@ export class TcgBoard extends preact.Component<{
 				return;
 			}
 
+			// The hand is about to be cleared. Keep the cards on this beat so the shuffle can show them.
+			if (e.type === 'shuffle' && e.from === 'hand' && e.seat != null) {
+				const mem = this.handMemory[e.seat];
+				fx = {
+					...fx,
+					ids: mem?.ids || undefined,
+					n: Math.max(mem?.count || 0, fx.n || 0, 3),
+				};
+			}
+
+			// Discard and Lost Zone ride along with the play that caused them.
+			if (e.type === 'toDiscard' || e.type === 'toLost') {
+				let j = i + 1;
+				while (j < events.length && (events[j]?.type === 'toDiscard' || events[j]?.type === 'toLost')) {
+					this.props.onEvent?.(events[j]);
+					j++;
+				}
+				this.foldEvents(events, j - 1);
+				i = j;
+				this.forceUpdate();
+				this.timer = window.setTimeout(step, 0);
+				return;
+			}
+
+			this.foldEvents(events, i);
+			let advance = 1;
+			if (e.type !== 'attack' && e.type !== 'ability') {
+				let j = i + 1;
+				while (j < events.length && (events[j]?.type === 'toDiscard' || events[j]?.type === 'toLost')) {
+					this.props.onEvent?.(events[j]);
+					j++;
+				}
+				if (j > i + 1) this.foldEvents(events, j - 1);
+				advance = j - i;
+			}
+			// A switch is two places. The first beat's FLIP already exchanges the two cards.
+			if (e.type === 'place') {
+				const nxt = events[i + advance];
+				if (nxt?.type === 'place' && nxt.seat === e.seat) {
+					this.props.onEvent?.(nxt);
+					this.foldEvents(events, i + advance);
+					advance += 1;
+				}
+			}
+
 			if (e.type === 'attack' || e.type === 'ability') {
 				const hits = attackHits(events, i, players);
+				const hitAt = attackHitIndexes(events, i);
 				if (!fx.extra) fx.extra = e.name || (e.type === 'ability' ? 'Ability' : 'Attack');
 				if (!fx.message) fx.message = `${monName(players, e.iid)} used ${fx.extra}`;
 
@@ -2977,21 +3511,27 @@ export class TcgBoard extends preact.Component<{
 				);
 				// Non-damaging moves: no lunge / slash / damage badge.
 				if (!numbered.length) {
-					const statusHits = hits.filter(h => h.kind === 'status');
-					if (statusHits.length) {
+					if (hits.some(h => h.kind === 'status')) {
 						let hi = 0;
 						const playStatus = () => {
-							if (hi >= statusHits.length) {
+							if (hi >= hits.length) {
 								i++;
 								this.timer = window.setTimeout(step, BEAT_MS);
 								return;
 							}
-							const h = statusHits[hi++];
+							const at = hitAt[hi];
+							const h = hits[hi++];
+							if (at != null) this.foldEvents(events, at);
+							if (h.kind !== 'status') {
+								this.timer = window.setTimeout(playStatus, 0);
+								return;
+							}
 							show({
 								kind: 'status',
 								iid: h.iid,
+								status: h.status ?? '',
 								src: h.src || (e.type === 'ability' ? 'ability' : 'attack'),
-								extra: h.label || fx.extra,
+								extra: h.label || statusWord(h.status) || 'Recovered',
 							});
 							this.timer = window.setTimeout(playStatus, HIT_MS);
 						};
@@ -3002,67 +3542,50 @@ export class TcgBoard extends preact.Component<{
 					this.timer = window.setTimeout(step, BEAT_MS);
 					return;
 				}
-				if (numbered.length > 1) {
-					// Wind-up (lunge / ability) then each hit one-by-one.
-					show({ ...fx, hits: [] });
-					let hi = 0;
-					const playHit = () => {
-						if (hi >= hits.length) {
-							i++;
-							this.timer = window.setTimeout(step, BEAT_MS);
-							return;
-						}
-						const h = hits[hi++];
-						// Skip zero-amount damage/heal noise between real hits.
-						if ((h.kind === 'damage' || h.kind === 'heal') && !(h.amount || 0)) {
-							this.timer = window.setTimeout(playHit, 0);
-							return;
-						}
-						const hitFx: FxBeat = h.kind === 'status' ? {
-							kind: 'status',
-							iid: h.iid,
-							src: h.src || (e.type === 'ability' ? 'ability' : 'attack'),
-							extra: h.label || fx.extra,
-						} : {
-							kind: h.kind,
-							iid: h.iid,
-							amount: h.amount,
-							src: h.src || (e.type === 'ability' ? 'ability' : 'attack'),
-							extra: h.label || fx.extra,
-							element: h.element,
-							hits: [h],
-						};
-						show(hitFx);
-						this.timer = window.setTimeout(playHit, HIT_MS);
+				// Wind-up, then each hit. HP is written when that hit connects, not on the lunge.
+				show({ ...fx, hits: [] });
+				let hi = 0;
+				const playHit = () => {
+					if (hi >= hits.length) {
+						i++;
+						this.timer = window.setTimeout(step, 400);
+						return;
+					}
+					const at = hitAt[hi];
+					const h = hits[hi++];
+					if (at != null) this.foldEvents(events, at);
+					if ((h.kind === 'damage' || h.kind === 'heal') && !(h.amount || 0)) {
+						this.timer = window.setTimeout(playHit, 0);
+						return;
+					}
+					const hitFx: FxBeat = h.kind === 'status' ? {
+						kind: 'status',
+						iid: h.iid,
+						status: h.status ?? '',
+						src: h.src || (e.type === 'ability' ? 'ability' : 'attack'),
+						extra: h.label || statusWord(h.status) || 'Recovered',
+					} : {
+						kind: h.kind,
+						iid: h.iid,
+						amount: h.amount,
+						src: h.src || (e.type === 'ability' ? 'ability' : 'attack'),
+						extra: h.label || fx.extra,
+						element: h.element,
+						hits: [h],
 					};
-					this.timer = window.setTimeout(playHit, WINDUP_MS);
-					return;
-				}
-				fx.hits = hits.filter(h =>
-					h.kind === 'status' || ((h.kind === 'damage' || h.kind === 'heal') && (h.amount || 0) > 0)
-				);
+					show(hitFx);
+					this.timer = window.setTimeout(playHit, HIT_MS);
+				};
+				this.timer = window.setTimeout(playHit, WINDUP_MS);
+				return;
 			}
 
 			show(fx, e);
 			let wait = Math.max(fx.kind === 'drawEffect' ? 3200 : fxDuration(e), BEAT_MS);
 			if (e.type === 'request' && (e.kind === 'search' || e.kind === 'mulligan') &&
 				actorIsYou((e.waiting && e.waiting[0]), you)) wait = 80;
-			// Knockout should follow the hit, not sit through a pause that lets the card vanish.
-			if (e.type === 'attack' || e.type === 'ability') {
-				let koFollows = false;
-				for (let j = i + 1; j < events.length; j++) {
-					const n = events[j];
-					if (!n) break;
-					const t = String(n.type || '');
-					if (t === 'damage' || t === 'heal' || t === 'status' || t === 'request' || t === 'act' || t === 'coin') {
-						continue;
-					}
-					koFollows = t === 'ko';
-					break;
-				}
-				if (koFollows) wait = HIT_MS + 400;
-			}
-			i++;
+			if (e.type === 'shuffle' && e.from !== 'hand') wait = 700;
+			i += advance;
 			this.timer = window.setTimeout(step, wait);
 		};
 		step();
@@ -3085,14 +3608,33 @@ export class TcgBoard extends preact.Component<{
 		const prizeTakenLocal = a.type === 'takePrize' ?
 			this.state.prizeTakenLocal + 1 :
 			0;
+		this.stopRefuseTimer();
 		this.setState({
 			selectedHand: null, energyPick: false, retreatPick: false, drag: null,
-			menuSlot: null, endTurnConfirm: false, prizeTakenLocal,
+			menuSlot: null, endTurnConfirm: false, prizeTakenLocal, refuse: null,
 		});
 		this.props.onAct(a);
 	};
 
+	refuseTimer: number | null = null;
+	stopRefuseTimer() {
+		if (this.refuseTimer != null) window.clearTimeout(this.refuseTimer);
+		this.refuseTimer = null;
+	}
+	/** Leave the reason on screen after the pointer comes up. */
+	showRefuse(text: string, x: number, y: number) {
+		if (!text) return;
+		this.stopRefuseTimer();
+		this.setState({ refuse: { text, x, y } });
+		this.refuseTimer = window.setTimeout(() => {
+			this.refuseTimer = null;
+			this.setState({ refuse: null });
+		}, 2400);
+	}
+
 	acts(): TcgAction[] {
+		// The request beat is when the new choices exist. Until then, keep the previous list.
+		if (this.foldedRequest && this.boardSnap) return this.boardSnap.actions || [];
 		return this.props.snapshot.actions || [];
 	}
 
@@ -3102,11 +3644,6 @@ export class TcgBoard extends preact.Component<{
 
 	startHandDrag = (i: number, cardId: string, e: PointerEvent) => {
 		if (e.button != null && e.button !== 0) return;
-		const hits = this.acts().filter(a => actionTouchesHand(a, i));
-		if (!hits.length) {
-			this.clickHand(i);
-			return;
-		}
 		e.preventDefault();
 		this.dragMoved = false;
 		this.holdConsumed = false;
@@ -3128,7 +3665,11 @@ export class TcgBoard extends preact.Component<{
 	startZoneDrag = (e: PointerEvent) => {
 		if (e.button != null && e.button !== 0) return;
 		const hits = this.zoneActs();
-		if (!hits.length) return;
+		if (!hits.length) {
+			const text = whyCant(this.props.snapshot, { zone: true }, this.props.waiting);
+			if (text) this.showRefuse(text, e.clientX, e.clientY);
+			return;
+		}
 		e.preventDefault();
 		this.dragMoved = false;
 		const zone = this.props.snapshot.players[this.props.snapshot.you ?? 0]?.energyZone;
@@ -3180,19 +3721,31 @@ export class TcgBoard extends preact.Component<{
 		}
 		const over = active ? this.hitDrop(e.clientX, e.clientY) : null;
 		let hint = drag.hint;
+		let refuse = this.state.refuse;
 		if (active && over) {
 			const hits = actionsForDrop(this.acts(), drag, over);
 			hint = hits.length ? dropVerb(hits[0]) : '';
+			const text = hits.length ? '' : whyCant(this.props.snapshot, {
+				hand: drag.hand, drop: over, source: drag.source, zone: drag.source === 'zone',
+			}, this.props.waiting);
+			refuse = text ? { text, x: e.clientX, y: e.clientY } : null;
 		} else if (active) {
 			hint = drag.source === 'zone' ? 'Drop on a Pokémon' : 'Drop on a valid target';
+			const idle = drag.source === 'hand' && drag.hand != null &&
+				!this.acts().some(a => actionTouchesHand(a, drag.hand as number));
+			const text = idle ? whyCant(this.props.snapshot, { hand: drag.hand }, this.props.waiting) : '';
+			refuse = text ? { text, x: e.clientX, y: e.clientY } : null;
 		}
+		if (active) this.stopRefuseTimer();
 		if (
 			active === drag.active &&
 			e.clientX === drag.x && e.clientY === drag.y &&
-			sameDrop(over, drag.over) && hint === drag.hint
+			sameDrop(over, drag.over) && hint === drag.hint &&
+			(refuse?.text || '') === (this.state.refuse?.text || '')
 		) return;
 		this.setState({
 			drag: { ...drag, x: e.clientX, y: e.clientY, active, over, hint },
+			refuse,
 		});
 	};
 
@@ -3200,7 +3753,7 @@ export class TcgBoard extends preact.Component<{
 		const drag = this.state.drag;
 		if (this.holdConsumed) {
 			this.holdConsumed = false;
-			if (drag) this.setState({ drag: null });
+			if (drag) this.setState({ drag: null, refuse: null });
 			return;
 		}
 		if (!drag) return;
@@ -3217,28 +3770,42 @@ export class TcgBoard extends preact.Component<{
 		}
 		if (!drag.active && drag.source === 'hand' && drag.hand != null) {
 			this.setState({ drag: null });
-			this.clickHand(drag.hand);
+			this.clickHand(drag.hand, e);
 			return;
 		}
 		if (!drag.active && drag.source === 'zone') {
 			this.setState({ drag: null });
-			this.clickEnergy();
+			this.clickEnergy(e);
 			return;
 		}
-		this.setState({ drag: null, inspect: null });
+		const text = whyCant(this.props.snapshot, {
+			hand: drag.hand,
+			drop: over,
+			source: drag.source,
+			zone: drag.source === 'zone',
+		}, this.props.waiting);
+		this.setState({ drag: null, inspect: null, refuse: null });
+		if (text) this.showRefuse(text, e.clientX, e.clientY);
 	};
 
-	clickHand = (i: number) => {
+	clickHand = (i: number, ev?: { clientX: number, clientY: number }) => {
 		const hits = this.acts().filter(a => actionTouchesHand(a, i));
 		if (hits.length === 1 && !hasBoardTarget(hits[0])) {
 			this.choose(hits[0]);
 			return;
 		}
+		if (!hits.length) {
+			const text = whyCant(this.props.snapshot, { hand: i }, this.props.waiting);
+			if (text && ev) this.showRefuse(text, ev.clientX, ev.clientY);
+			return;
+		}
+		this.stopRefuseTimer();
 		this.setState({
 			selectedHand: this.state.selectedHand === i ? null : i,
 			energyPick: false,
 			retreatPick: false,
 			menuSlot: null,
+			refuse: null,
 		});
 	};
 
@@ -3263,13 +3830,17 @@ export class TcgBoard extends preact.Component<{
 		return this.slotLegal(slot, false);
 	}
 
-	clickSlot = (slot: TcgSlot, foe = false) => {
+	clickSlot = (slot: TcgSlot, foe = false, ev?: MouseEvent) => {
 		if (this.state.drag?.active) return;
 		const acts = this.acts();
+		const snap = this.props.snapshot;
+		const at = (text: string) => {
+			if (text && ev) this.showRefuse(text, ev.clientX, ev.clientY);
+		};
 		const { selectedHand, energyPick, retreatPick, menuSlot } = this.state;
 		if (selectedHand != null) {
-			const me = this.props.snapshot.players[this.props.snapshot.you ?? 0];
-			const opp = this.props.snapshot.players[this.props.snapshot.you === 0 ? 1 : 0];
+			const me = snap.players[snap.you ?? 0];
+			const opp = snap.players[snap.you === 0 ? 1 : 0];
 			const side = foe ? opp : me;
 			const empty = !(slot === 'active' ? side?.active : side?.bench?.[Number(slot)]);
 			const drop: DropTarget = { kind: 'slot', slot, foe, empty };
@@ -3277,14 +3848,19 @@ export class TcgBoard extends preact.Component<{
 			if (hits.length === 1) return this.choose(hits[0]);
 			const legacy = acts.filter(a => actionTouchesHand(a, selectedHand) && actionTouchesSlot(a, slot));
 			if (legacy.length === 1) return this.choose(legacy[0]);
+			at(whyCant(snap, { hand: selectedHand, drop }, this.props.waiting));
+			return;
 		}
 		if (!foe && energyPick) {
 			const hits = this.zoneActs().filter(a => actionTouchesSlot(a, slot));
 			if (hits.length === 1) return this.choose(hits[0]);
+			at(whyCant(snap, { zone: true, drop: { kind: 'slot', slot, foe, empty: false }, source: 'zone' }, this.props.waiting));
+			return;
 		}
 		if (retreatPick) {
 			const hits = acts.filter(a => a.type === 'retreat' && typeof slot === 'number' && a.bench === slot);
 			if (hits.length === 1) return this.choose(hits[0]);
+			at(foe || slot === 'active' ? 'Choose a Benched Pokémon to switch in.' : "This Pokémon can't retreat there.");
 			return;
 		}
 		const promo = acts.filter(a => a.type === 'promote' && typeof slot === 'number' && a.bench === slot);
@@ -3301,14 +3877,17 @@ export class TcgBoard extends preact.Component<{
 		// Live-style: tap your Pokémon to open its action menu.
 		const menu = this.menuActs(slot);
 		if (menu.length) {
+			this.stopRefuseTimer();
 			this.setState({
 				menuSlot: menuSlot === slot ? null : slot,
 				selectedHand: null,
 				energyPick: false,
+				refuse: null,
 			});
 			return;
 		}
 		this.setState({ menuSlot: null });
+		at(whyCant(snap, { slot }, this.props.waiting));
 	};
 
 	pickMenuAction = (a: TcgAction) => {
@@ -3321,9 +3900,13 @@ export class TcgBoard extends preact.Component<{
 		this.choose(a);
 	};
 
-	clickEnergy = () => {
+	clickEnergy = (ev?: { clientX: number, clientY: number }) => {
 		const hits = this.zoneActs();
-		if (!hits.length) return;
+		if (!hits.length) {
+			const text = whyCant(this.props.snapshot, { zone: true }, this.props.waiting);
+			if (text && ev) this.showRefuse(text, ev.clientX, ev.clientY);
+			return;
+		}
 		if (hits.length === 1) {
 			this.choose(hits[0]);
 			return;
@@ -3331,12 +3914,21 @@ export class TcgBoard extends preact.Component<{
 		this.setState({ energyPick: true, selectedHand: null, retreatPick: false, menuSlot: null });
 	};
 
-	clickPlayZone = () => {
+	clickPlayZone = (ev?: MouseEvent) => {
 		const { selectedHand, drag } = this.state;
 		if (drag?.active) return;
 		if (selectedHand == null) return;
 		const hits = actionsForDrop(this.acts(), { source: 'hand', hand: selectedHand }, { kind: 'play' });
-		if (hits.length === 1) this.choose(hits[0]);
+		if (hits.length === 1) {
+			this.choose(hits[0]);
+			return;
+		}
+		if (ev) {
+			const text = whyCant(this.props.snapshot, {
+				hand: selectedHand, drop: { kind: 'play' },
+			}, this.props.waiting);
+			if (text) this.showRefuse(text, ev.clientX, ev.clientY);
+		}
 	};
 
 	slotDropMeta(slot: TcgSlot, foe: boolean, empty: boolean): { dropOk: boolean, dropHot: boolean, dropLabel: string } {
@@ -3387,27 +3979,28 @@ export class TcgBoard extends preact.Component<{
 	override render() {
 		const snap = this.props.snapshot;
 		this.noteRemovals(snap);
-		this.rememberMons(snap);
-		this.rememberMons(this.props.fxSnapshot || snap);
+		// Already shown face up on an earlier beat of this batch; don't flip them again at commit.
+		if (this.boardSnap) {
+			this.boardSnap.players.forEach(p => {
+				const mons = [p?.active, ...(p?.bench || [])];
+				mons.forEach(m => { if (m && !m.faceDown) delete this.faceDownSeen[m.iid]; });
+			});
+		}
 		const meIndex: 0 | 1 = (this.props.viewpoint === 0 || this.props.viewpoint === 1) ?
 			this.props.viewpoint : (snap.you === 1 ? 1 : 0);
 		const foeIndex: 0 | 1 = meIndex === 0 ? 1 : 0;
-		const me = snap.players[meIndex];
-		const foe = snap.players[foeIndex];
+		// Events already played this batch. Choices still come from the committed snapshot until the request.
+		const view = this.boardSnap || snap;
+		this.rememberMons(view);
+		const me = view.players[meIndex];
+		const foe = view.players[foeIndex];
 		if (!me || !foe) {
 			return <div class="tcg-table"><p class="tcg-waiting">Waiting for TCG snapshot…</p></div>;
 		}
 		const benchSize = snap.format?.benchSize || Math.max(me.bench.length, foe.bench.length, 3);
-		const myHandAll = handIds(me.hand);
-		// Cards whose play beat has already run leave the fan now, not when the batch commits.
-		const spent = { ...this.liveOverlay().hand };
-		const myHand = myHandAll && myHandAll
-			.map((id, i) => ({ id, i }))
-			.filter(c => {
-				if (!spent[c.id]) return true;
-				spent[c.id]--;
-				return false;
-			});
+		// Fan keeps pre-batch indexes so a click still matches the server hand.
+		// Played cards leave on their beat; drawn and prize cards join on theirs.
+		const myHand = handFan(handIds(snap.players[meIndex]?.hand), me.hand);
 		const shuffleFx = this.state.fx?.kind === 'shuffleHand' ? this.state.fx : null;
 		const shufflingMine = !!(shuffleFx && shuffleFx.seat === meIndex);
 		const shufflingFoe = !!(shuffleFx && shuffleFx.seat !== meIndex);
@@ -3419,20 +4012,22 @@ export class TcgBoard extends preact.Component<{
 		const fxNow = this.state.fx;
 		const choosingFirst = allActs.some(a => a.type === 'chooseFirst') ||
 			fxNow?.kind === 'coin' || fxNow?.kind === 'first';
-		const turnSeat = typeof snap.turn === 'number' ? snap.turn : null;
-		const turnOwner = turnSeat != null ? snap.players[turnSeat] : null;
+		const ahead = view !== snap;
+		const turnSeat = typeof view.turn === 'number' ? view.turn : null;
+		const turnOwner = turnSeat != null ? view.players[turnSeat] : null;
 		const yourTurn = !this.props.ended && !this.props.waiting && allActs.length > 0;
-		// Spectators never own a seat; "Your turn" only with a live choice, not a leftover turn FX.
+		// While beats are playing, the badge follows the turn event instead of leftover actions.
 		const isMyTurnSeat = snap.you != null && snap.you === meIndex && (
-			allActs.length > 0 ||
-			(snap.status === 'playing' && turnSeat === snap.you && !this.props.waiting)
+			ahead ? (view.status === 'playing' && turnSeat === snap.you) :
+			(allActs.length > 0 ||
+				(view.status === 'playing' && turnSeat === snap.you && !this.props.waiting))
 		);
 		// After the game, a replay re-shows earlier snapshots: label those by turn, not "End".
-		const replaying = !!this.props.ended && snap.status !== 'over';
-		const displayTurn = snap.turnNumber || 1;
+		const replaying = !!this.props.ended && view.status !== 'over';
+		const displayTurn = view.turnNumber || 1;
 		const turnWho = this.props.ended && !replaying ? '' :
-			choosingFirst && snap.status === 'setup' ? 'Coin flip' :
-			snap.status === 'setup' ? 'Setup phase' :
+			choosingFirst && view.status === 'setup' ? 'Coin flip' :
+			view.status === 'setup' ? 'Setup phase' :
 			isMyTurnSeat ? 'Your turn' :
 			turnOwner ? `${turnOwner.name}'s turn` : '';
 		const pocket = !!(me.energyZone || snap.format?.energyZone);
@@ -3455,7 +4050,7 @@ export class TcgBoard extends preact.Component<{
 		const discards = allActs.filter(a => a.type === 'discardPick');
 		const pays = allActs.filter(a => a.type === 'payEnergy');
 		const prizeActs = allActs.filter(a => a.type === 'takePrize');
-		const prizeNeed = snap.pendingPrize?.n || 0;
+		const prizeNeed = view.pendingPrize?.n || 0;
 		// Snapshot (and takePrize actions) lag until prize FX commits — hide as soon as enough picks are sent.
 		const prizes = (prizeNeed > 0 && this.state.prizeTakenLocal >= prizeNeed) ? [] : prizeActs;
 		const mulligans = allActs.filter(a => a.type === 'mulliganBench' || a.type === 'mulliganDone');
@@ -3493,21 +4088,21 @@ export class TcgBoard extends preact.Component<{
 		// Spectators never get player prompts (discard / setup / search).
 		const seated = snap.you != null && !this.props.ended;
 		const hint = this.props.ended || !seated ? (dragging && drag!.hint) || '' : (dragging && drag!.hint) ||
-			snap.pendingConfirm?.text ||
+			view.pendingConfirm?.text ||
 			(this.state.energyPick ? 'Choose a Pokémon for Energy' : '') ||
 			(this.state.retreatPick ? 'Choose a Benched Pokémon to switch in' : '') ||
 			(this.state.menuSlot != null ? 'Choose an action' : '') ||
 			(selectedHand != null && selectedHandNeedTarget.length ?
 				`Drag or tap a Pokémon for ${describeAction(selectedHandNeedTarget[0], snap)}` : '') ||
 			(selectedHand != null ? 'Drag onto a target or the play area' : '') ||
-			(snap.pendingSearch ? 'Choose a card from the search' : '') ||
-			(snap.pendingDiscard ? `Drag ${snap.pendingDiscard.need} card${snap.pendingDiscard.need === 1 ? '' : 's'} to Discard` : '') ||
-			(snap.pendingRetreatPay ? `Discard ${snap.pendingRetreatPay.need} Energy to retreat` : '') ||
-			(snap.pendingPromote != null && snap.pendingPromote === snap.you ?
+			(view.pendingSearch ? 'Choose a card from the search' : '') ||
+			(view.pendingDiscard ? `Drag ${view.pendingDiscard.need} card${view.pendingDiscard.need === 1 ? '' : 's'} to Discard` : '') ||
+			(view.pendingRetreatPay ? `Discard ${view.pendingRetreatPay.need} Energy to retreat` : '') ||
+			(view.pendingPromote != null && view.pendingPromote === snap.you ?
 				'Choose a Benched Pokémon to promote' : '') ||
-			(prizes.length && snap.pendingPrize ?
-				`Take ${Math.max(1, snap.pendingPrize.n - this.state.prizeTakenLocal)} Prize card${
-					snap.pendingPrize.n - this.state.prizeTakenLocal === 1 ? '' : 's'
+			(prizes.length && view.pendingPrize ?
+				`Take ${Math.max(1, view.pendingPrize.n - this.state.prizeTakenLocal)} Prize card${
+					view.pendingPrize.n - this.state.prizeTakenLocal === 1 ? '' : 's'
 				}` :
 				prizes.length ? 'Take a Prize card' : '') ||
 			(discards.length ? 'Drag a card to Discard' : '') ||
@@ -3517,7 +4112,7 @@ export class TcgBoard extends preact.Component<{
 		// Only call it "waiting for opponent" when the opponent actually holds the
 		// turn (or still has setup to finish); a server round-trip during our own
 		// turn is not their fault and the banner would just flash on every click.
-		const foeHoldsTurn = snap.status === 'setup' ?
+		const foeHoldsTurn = view.status === 'setup' ?
 			me.setup === 'done' && foe.setup !== 'done' :
 			turnSeat != null && !isMyTurnSeat;
 		const waitingOpp = !this.props.ended && snap.you != null && !allActs.length && foeHoldsTurn &&
@@ -3588,7 +4183,7 @@ export class TcgBoard extends preact.Component<{
 				</div>
 				<div class={`tcg-turn-badge${yourTurn || isMyTurnSeat ? ' yours' : ''}${this.props.ended && !replaying ? ' over' : ''}${!isMyTurnSeat && turnSeat != null ? ' foe' : ''}`}>
 					<span class="tcg-turn-num">
-						{this.props.ended && !replaying ? 'End' : snap.status === 'setup' ? (choosingFirst ? 'Coin' : 'Setup') : `Turn ${displayTurn}`}
+						{this.props.ended && !replaying ? 'End' : view.status === 'setup' ? (choosingFirst ? 'Coin' : 'Setup') : `Turn ${displayTurn}`}
 					</span>
 					{turnWho && <span class="tcg-turn-who">{turnWho}</span>}
 				</div>
@@ -3618,8 +4213,8 @@ export class TcgBoard extends preact.Component<{
 				<section class="tcg-half foe">
 					<div class="tcg-side left">
 						{!pocket ?
-							<TcgPrizeRail remaining={prizesLeft(foe, need, snap.status)} max={need} foe /> :
-							<TcgPoints scored={scoredPoints(foe, need, snap.status)} need={need} pocket />}
+							<TcgPrizeRail remaining={prizesLeft(foe, need, view.status)} max={need} foe /> :
+							<TcgPoints scored={scoredPoints(foe, need, view.status)} need={need} pocket />}
 					</div>
 					<div class="tcg-field">
 						<div class="tcg-zone tcg-bench foe">
@@ -3632,7 +4227,7 @@ export class TcgBoard extends preact.Component<{
 									legal={!ghost && this.slotActionable(i, true)}
 									{...this.slotDropMeta(i, true, !mon)}
 									{...monFx(shown)}
-									onClick={ghost ? undefined : () => this.clickSlot(i, true)} onInspect={this.openInspect}
+									onClick={ghost ? undefined : (ev: MouseEvent) => this.clickSlot(i, true, ev)} onInspect={this.openInspect}
 								/>;
 							})}
 						</div>
@@ -3643,7 +4238,7 @@ export class TcgBoard extends preact.Component<{
 								legal={!foe.active && foeActive ? false : this.slotActionable('active', true)}
 								{...this.slotDropMeta('active', true, !foe.active)}
 								{...monFx(foeActive)}
-								onClick={!foe.active && foeActive ? undefined : () => this.clickSlot('active', true)}
+								onClick={!foe.active && foeActive ? undefined : (ev: MouseEvent) => this.clickSlot('active', true, ev)}
 								onInspect={this.openInspect}
 							/>
 						</div>
@@ -3703,16 +4298,16 @@ export class TcgBoard extends preact.Component<{
 					<div class="tcg-side left">
 						{!pocket ?
 							<TcgPrizeRail
-								remaining={prizesLeft(me, need, snap.status)} max={need}
+								remaining={prizesLeft(me, need, view.status)} max={need}
 								takeActs={prizes} onTake={a => this.choose(a)}
 							/> :
 							<>
-								<TcgPoints scored={scoredPoints(me, need, snap.status)} need={need} pocket />
+								<TcgPoints scored={scoredPoints(me, need, view.status)} need={need} pocket />
 								{(zone || pocket) && <button
 									type="button"
 									class={`tcg-ezone ${canAttach ? 'ready' : 'off'} ${this.state.energyPick ? 'pick' : ''} ${drag?.source === 'zone' && dragging ? 'dragging' : ''}`}
-									onPointerDown={canAttach ? (ev: any) => this.startZoneDrag(ev) : undefined}
-									title={canAttach ? 'Drag onto a Pokémon to attach' : 'Energy Zone'}
+									onPointerDown={(ev: any) => this.startZoneDrag(ev)}
+									title={canAttach ? 'Drag onto a Pokémon to attach' : ''}
 								>
 									<span
 										class="tcg-ezone-now"
@@ -3734,7 +4329,7 @@ export class TcgBoard extends preact.Component<{
 								{...this.slotDropMeta('active', false, !me.active)}
 								{...monFx(meActive)}
 								selected={this.state.menuSlot === 'active'}
-								onClick={!me.active && meActive ? undefined : () => this.clickSlot('active')}
+								onClick={!me.active && meActive ? undefined : (ev: MouseEvent) => this.clickSlot('active', false, ev)}
 								onInspect={this.openInspect}
 							/>
 						</div>
@@ -3749,7 +4344,7 @@ export class TcgBoard extends preact.Component<{
 									{...this.slotDropMeta(i, false, !mon)}
 									{...monFx(shown)}
 									selected={!ghost && this.state.menuSlot === i}
-									onClick={ghost ? undefined : () => this.clickSlot(i)} onInspect={this.openInspect}
+									onClick={ghost ? undefined : (ev: MouseEvent) => this.clickSlot(i, false, ev)} onInspect={this.openInspect}
 								/>;
 							})}
 						</div>
@@ -3805,8 +4400,8 @@ export class TcgBoard extends preact.Component<{
 								fanIndex={i} fanCount={shuffleHandCount}
 							/>
 						)
-				) : myHand ? myHand.map(({ id, i }, fan) => {
-					const playable = allActs.some(a => actionTouchesHand(a, i));
+				) : myHand ? myHand.map(({ id, i, arrive }, fan) => {
+					const playable = i >= 0 && allActs.some(a => actionTouchesHand(a, i));
 					// Key by "nth copy of this card", not by index, so playing one card lets the
 					// rest glide over instead of remounting every card to its right.
 					let nth = 0;
@@ -3814,11 +4409,12 @@ export class TcgBoard extends preact.Component<{
 					return <TcgCardFace
 						key={`${id}#${nth}`} cardId={id} size="md"
 						pocket={pocket}
-						selected={this.state.selectedHand === i}
+						arrive={arrive}
+						selected={i >= 0 && this.state.selectedHand === i}
 						playable={playable}
-						dragging={drag?.source === 'hand' && drag.hand === i && dragging}
+						dragging={i >= 0 && drag?.source === 'hand' && drag.hand === i && dragging}
 						fanIndex={fan} fanCount={myHand.length}
-						onPointerDown={playable ? (ev: any) => this.startHandDrag(i, id, ev) : undefined}
+						onPointerDown={i >= 0 ? (ev: any) => this.startHandDrag(i, id, ev) : undefined}
 						onHold={this.onCardHold}
 						onInspect={this.openInspect}
 					/>;
@@ -4059,6 +4655,11 @@ export class TcgBoard extends preact.Component<{
 						<CardBackFace />)}
 				{drag.hint && <em>{drag.hint}</em>}
 			</div>}
+			{this.state.refuse && <div
+				class="tcg-refuse"
+				style={{ left: `${this.state.refuse.x}px`, top: `${this.state.refuse.y}px` }}
+				role="status"
+			>{this.state.refuse.text}</div>}
 			<FxOverlay
 				key={st.fx ? `${st.fx.kind}-${st.fx.iid || ''}-${st.fx.amount || ''}-${Object.values(st.pkFx)[0]?.tick || 0}` : 'fx'}
 				fx={st.fx} you={snap.you} viewpoint={meIndex}
