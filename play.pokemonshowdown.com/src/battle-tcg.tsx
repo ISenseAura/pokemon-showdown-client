@@ -410,6 +410,21 @@ export function applyTcgEvent(snap: TcgSnapshot, e: TcgEvent) {
 				found.mon.tools = [...(found.mon.tools || []), e.cardId || 'tool'];
 			}
 		}
+	} else if (e.type === 'fromHand') {
+		const p = players[e.seat as number];
+		if (p) {
+			const ids = e.ids as string[] | undefined;
+			const hand = handAsIds(p.hand);
+			if (hand && ids?.length) {
+				for (const id of ids) {
+					const at = hand.indexOf(id);
+					if (at >= 0) hand.splice(at, 1);
+				}
+				setHand(p, hand);
+			} else if (!Array.isArray(p.hand) && p.hand) {
+				p.hand = bumpPile(p.hand as { count: number }, -(Number(e.n) || ids?.length || 1));
+			}
+		}
 	} else if (e.type === 'draw' || e.type === 'find') {
 		const seat = e.seat as number;
 		const p = players[seat];
@@ -756,12 +771,31 @@ const printedNames: { [id: string]: string } = {
 	'sve-13': 'Psychic Energy', 'sve-14': 'Fighting Energy', 'sve-15': 'Darkness Energy', 'sve-16': 'Metal Energy',
 };
 const printedNamesLoaded: { [file: string]: boolean } = {};
+/** Card index ships with this client. `Net` would send a root path to the sprite host. */
+function namesUrl(file: string): string {
+	if (file.charAt(0) === '/' && typeof document !== 'undefined' && document.location?.host) {
+		return document.location.protocol + '//' + document.location.host + file;
+	}
+	return file;
+}
+/** Lines already on screen were written before the index arrived. */
+function rewriteLoggedCardIds() {
+	if (typeof document === 'undefined') return;
+	const nodes = document.querySelectorAll('.tcg-log-text');
+	for (let i = 0; i < nodes.length; i++) {
+		const el = nodes[i] as HTMLElement;
+		const text = el.textContent || '';
+		const next = text.replace(/\b[a-z][a-z0-9]*-\d+[a-z0-9]*\b/gi, id => printedName(id) || id);
+		if (next !== text) el.textContent = next;
+	}
+}
 function loadPrintedNames(file = '/tcg-names.json') {
 	if (printedNamesLoaded[file]) return;
 	printedNamesLoaded[file] = true;
-	Net(file).get().then(text => {
+	Net(namesUrl(file)).get().then(text => {
 		const data = JSON.parse(text);
 		if (data && typeof data === 'object') Object.assign(printedNames, data);
+		rewriteLoggedCardIds();
 	}).catch(() => {});
 }
 loadPrintedNames();
@@ -964,6 +998,7 @@ function drawCause(
 function skipEvent(events: TcgEvent[], i: number): boolean {
 	const e = events[i];
 	if (!e) return true;
+	if (e.type === 'fromHand') return true;
 	if (e.type === 'request') return e.kind !== 'search' && e.kind !== 'mulligan';
 	if (e.type === 'act') {
 		const t = e.action?.type;
@@ -1023,8 +1058,11 @@ function sourceName(src?: { kind?: string, name?: string, cardId?: string } | nu
 	if (kind === 'ko') return 'a Knock Out';
 	return '';
 }
-function fromSource(e: { source?: { kind?: string, name?: string, cardId?: string } }): string {
+function fromSource(e: { source?: { kind?: string, name?: string, cardId?: string }, ids?: string[] }): string {
 	if (e.source?.kind === 'ko') return ' for the Knock Out';
+	// Playing Switch discards Switch. That is the play, so it does not say "from Switch".
+	const ids = Array.isArray(e.ids) ? e.ids.filter(Boolean) : [];
+	if (e.source?.cardId && ids.length && ids.every((id) => id === e.source.cardId)) return '';
 	const name = sourceName(e.source);
 	return name ? ` from ${name}` : '';
 }
@@ -1099,6 +1137,11 @@ function searchZoneText(snap: TcgSnapshot | null | undefined, seat: number | und
 	return 'for a card';
 }
 
+function dealCount(e: { counts?: number[] }): number {
+	const counts = Array.isArray(e.counts) ? e.counts : [];
+	return counts.length ? Number(counts[0]) || 0 : 7;
+}
+
 /** English battle chat from events (graphics.md / Unreal-Bot chatLine). */
 export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?: TcgSnapshot | null): TcgChatEntry | null {
 	const w = (seat: number) => whoName(players, seat);
@@ -1146,8 +1189,10 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?
 				`${w(ev.seat)} goes first.`,
 			seat: ev.seat,
 		};
-	case 'deal':
-		return { kind: 'setup', label: 'Deal', text: 'Each player drew 7 cards.' };
+	case 'deal': {
+		const dealt = dealCount(ev);
+		return { kind: 'setup', label: 'Deal', text: `Each player drew ${dealt} cards.` };
+	}
 	case 'coin': {
 		const why = sourceName(ev.source);
 		const face = ev.heads ? 'Heads.' : 'Tails.';
@@ -1260,6 +1305,8 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?
 			seat: ev.seat,
 		};
 	}
+	case 'fromHand':
+		return null;
 	case 'find': {
 		const ids = Array.isArray(ev.ids) ? ev.ids.filter(Boolean) : [];
 		const why = fromSource(ev);
@@ -1465,10 +1512,12 @@ function fxFor(
 		};
 	}
 	if (e.type === 'deal') {
+		const dealt = dealCount(e);
+		const line = `Each player drew ${dealt} cards`;
 		return {
-			kind: 'deal', n: 7,
-			extra: 'Each player drew 7 cards',
-			message: 'Each player drew 7 cards',
+			kind: 'deal', n: dealt,
+			extra: line,
+			message: line,
 		};
 	}
 	if (e.type === 'prize' || e.type === 'prizeTake') {
@@ -2504,6 +2553,16 @@ function promptHeading(snap: TcgSnapshot, kind: string): { title: string, sub?: 
 	return { title: 'Choose' };
 }
 
+/** Yes and skip for one attack: the printed "you may" choice, not two copies of the attack. */
+function optionalAttackPair(acts: TcgAction[], index: number): { yes: TcgAction, no: TcgAction } | null {
+	const group = acts.filter(a => a.type === 'attack' && a.index === index);
+	if (group.length !== 2) return null;
+	const yes = group.find(a => a.pick === 'yes');
+	const no = group.find(a => a.pick === 'skip');
+	if (!yes || !no) return null;
+	return { yes, no };
+}
+
 export function describeAction(a: TcgAction, snap: TcgSnapshot): string {
 	const me = snap.players[snap.you ?? 0];
 	const handId = (i?: number) => (Array.isArray(me?.hand) && i != null ? me.hand[i] : '') || '';
@@ -2985,6 +3044,8 @@ export class TcgBoard extends preact.Component<{
 		inspect: null as Preview | null,
 		menuSlot: null as TcgSlot | null,
 		endTurnConfirm: false,
+		/** "You may" on an attack. Yes and No are the two attack actions; Cancel attacks nothing. */
+		attackMay: null as { yes: TcgAction, no: TcgAction, title: string, text: string } | null,
 		/** Prize indexes already sent for the current prompt. */
 		prizePicked: [] as number[],
 		/** How many prizes this prompt asked for. The prompt closes once that many are sent. */
@@ -3762,6 +3823,11 @@ export class TcgBoard extends preact.Component<{
 	};
 
 	choose = (a: TcgAction) => {
+		// The previous request's buttons stay up while its animation plays.
+		if (this.props.waiting) {
+			if (this.state.drag) this.setState({ drag: null });
+			return;
+		}
 		let prizePicked = this.state.prizePicked;
 		let prizeGoal = this.state.prizeGoal;
 		let firstSent = this.state.firstSent;
@@ -3777,7 +3843,7 @@ export class TcgBoard extends preact.Component<{
 		this.stopRefuseTimer();
 		this.setState({
 			selectedHand: null, energyPick: false, retreatPick: false, drag: null,
-			menuSlot: null, endTurnConfirm: false, prizePicked, prizeGoal, firstSent, refuse: null,
+			menuSlot: null, endTurnConfirm: false, attackMay: null, prizePicked, prizeGoal, firstSent, refuse: null,
 		});
 		this.props.onAct(a);
 	};
@@ -4057,6 +4123,17 @@ export class TcgBoard extends preact.Component<{
 	};
 
 	pickMenuAction = (a: TcgAction) => {
+		if (a.type === 'attack' && this.state.menuSlot != null) {
+			const pair = optionalAttackPair(this.menuActs(this.state.menuSlot), a.index);
+			if (pair) {
+				const text = pair.yes.text || pair.no.text || 'Use this attack\'s extra effect?';
+				this.setState({
+					attackMay: { yes: pair.yes, no: pair.no, title: pair.yes.name || 'Attack', text },
+					menuSlot: null,
+				});
+				return;
+			}
+		}
 		if (a.type === 'retreat') {
 			const retreats = this.acts().filter(x => x.type === 'retreat');
 			if (retreats.length === 1) return this.choose(retreats[0]);
@@ -4140,7 +4217,7 @@ export class TcgBoard extends preact.Component<{
 		return false;
 	}
 
-	clearSel = () => this.setState({ selectedHand: null, energyPick: false, retreatPick: false, drag: null, inspect: null, menuSlot: null, endTurnConfirm: false });
+	clearSel = () => this.setState({ selectedHand: null, energyPick: false, retreatPick: false, drag: null, inspect: null, menuSlot: null, endTurnConfirm: false, attackMay: null });
 
 	override render() {
 		const snap = this.props.snapshot;
@@ -4644,7 +4721,10 @@ export class TcgBoard extends preact.Component<{
 							<button type="button" class="tcg-cancel" onClick={this.clearSel}>✕</button>
 						</header>
 						<div class="tcg-action-list">
-							{menu.map((a, i) => {
+							{menu.filter((a, i) => {
+								if (a.type !== 'attack' || !optionalAttackPair(menu, a.index)) return true;
+								return menu.findIndex(x => x.type === 'attack' && x.index === a.index) === i;
+							}).map((a, i) => {
 								if (a.type === 'attack') {
 									const atk = a.name || a.cost || a.damage ?
 										{ name: a.name, cost: a.cost, damage: a.damage } :
@@ -4684,7 +4764,9 @@ export class TcgBoard extends preact.Component<{
 				const no = confirms.find(a => a.type === 'confirmNo');
 				const goFirst = firsts.find(a => a.goFirst);
 				const goSecond = firsts.find(a => !a.goFirst);
+				const may = this.state.attackMay;
 				const kind =
+					may ? 'may' :
 					this.state.endTurnConfirm && endTurn ? 'endTurn' :
 					confirms.length ? 'confirm' :
 					firsts.length ? 'first' :
@@ -4693,7 +4775,7 @@ export class TcgBoard extends preact.Component<{
 					mulligans.length ? 'mulligan' :
 					prizes.length ? 'prize' : '';
 				if (!kind || snap.you == null) return null;
-				const head = promptHeading(snap, kind);
+				const head = kind === 'may' && may ? { title: may.title } : promptHeading(snap, kind);
 				return <div class={`tcg-prompt kind-${kind}`}>
 					<div class="tcg-prompt-veil"></div>
 					<div class="tcg-prompt-panel">
@@ -4701,6 +4783,15 @@ export class TcgBoard extends preact.Component<{
 							<strong>{head.title}</strong>
 							{head.sub && <span>{head.sub}</span>}
 						</div>
+
+						{kind === 'may' && may && <div class="tcg-prompt-dialog">
+							<p>{may.text}</p>
+							<div class="tcg-prompt-acts">
+								<button type="button" class="tcg-btn quiet" onClick={() => this.setState({ attackMay: null })}>Cancel</button>
+								<button type="button" class="tcg-btn danger" onClick={() => this.choose(may.no)}>No</button>
+								<button type="button" class="tcg-btn primary" onClick={() => this.choose(may.yes)}>Yes</button>
+							</div>
+						</div>}
 
 						{kind === 'confirm' && <div class="tcg-prompt-dialog">
 							{snap.pendingConfirm?.text && <p>{snap.pendingConfirm.text}</p>}
