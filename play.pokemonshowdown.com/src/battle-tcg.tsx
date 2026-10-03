@@ -4668,6 +4668,13 @@ export class TcgBoard extends preact.Component<{
 						<TcgCardFace key={i} back size="md" />
 					)}
 				</div>
+				<div class="tcg-player me dock">
+					<div class="tcg-player-meta">
+						<span class="tcg-name">{me.name}</span>
+						<span class="tcg-hand-count" title={`${pileCount(me.hand)} in hand`}>{pileCount(me.hand)}</span>
+					</div>
+					<span class="tcg-avatar me" aria-hidden="true">{(me.name || '?').slice(0, 1).toUpperCase()}</span>
+				</div>
 			</div>
 
 			{hint && <div class="tcg-float-hint">{hint}</div>}

@@ -35,55 +35,16 @@
 	z-index: 0;
 	pointer-events: none;
 	border-radius: 20px;
-	background:
-		linear-gradient(180deg,
-			#b03a42 0%,
-			#7a242c 34%,
-			#4a4a52 45%,
-			#3a4558 50%,
-			#2a5088 62%,
-			#1c3f78 100%);
+	background: #1a406e;
 	box-shadow:
 		inset 0 0 0 1px rgba(255, 255, 255, 0.06),
 		inset 0 0 90px rgba(0, 0, 0, 0.3),
 		0 12px 32px rgba(0, 0, 0, 0.5);
 }
-.tcg-felt::before {
-	content: '';
-	position: absolute;
-	inset: 0;
-	background:
-		radial-gradient(ellipse 60% 26% at 50% 18%, rgba(255, 90, 80, 0.22), transparent 72%),
-		radial-gradient(ellipse 60% 28% at 50% 86%, rgba(60, 130, 255, 0.24), transparent 72%);
-	pointer-events: none;
-}
-.tcg-felt::after {
-	content: '';
-	position: absolute;
-	left: 50%;
-	top: 50%;
-	width: min(420px, 70%);
-	height: min(280px, 42%);
-	transform: translate(-50%, -50%);
-	border-radius: 50%;
-	background:
-		repeating-radial-gradient(circle at 50% 50%,
-			transparent 0 18px,
-			rgba(255, 255, 255, 0.03) 18px 19px);
-	opacity: 0.55;
-	pointer-events: none;
-}
+.tcg-felt::before { content: none; }
+.tcg-felt::after { content: none; }
 .tcg-table.pocket .tcg-felt {
-	background:
-		radial-gradient(ellipse 70% 42% at 50% 48%, rgba(50, 160, 110, 0.2), transparent 70%),
-		radial-gradient(ellipse at 50% 12%, rgba(255, 200, 90, 0.14), transparent 38%),
-		linear-gradient(180deg, #1a3a2c 0%, #0d241c 48%, #07140f 100%);
-}
-.tcg-table.pocket .tcg-felt::before { display: none; }
-.tcg-table.pocket .tcg-felt::after {
-	opacity: 0.35;
-	background: radial-gradient(ellipse at 50% 50%, rgba(40, 140, 100, 0.2), transparent 65%);
-	border-color: rgba(140, 220, 160, 0.15);
+	background: #14382c;
 }
 .tcg-table.tcg-your-turn .tcg-felt {
 	box-shadow:
@@ -150,7 +111,11 @@
 .tcg-player.me.dock {
 	flex: 0 0 auto;
 	padding: 0 6px 2px 4px;
+	align-self: flex-end;
+	z-index: 9;
 }
+.tcg-player.me.dock .tcg-player-meta { align-items: flex-end; }
+.tcg-player.me.dock .tcg-name { max-width: 160px; }
 .tcg-player-meta {
 	display: flex;
 	flex-direction: column;
@@ -260,7 +225,7 @@
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	max-width: 140px;
+	max-width: 180px;
 	text-shadow: 0 1px 3px #000;
 }
 .tcg-points {
@@ -865,17 +830,17 @@
 }
 .tcg-mon.drop-ok .tcg-card-inner,
 .tcg-mon.empty.drop-ok {
-	box-shadow: 0 0 0 2px rgba(125, 255, 179, 0.75), 0 8px 16px rgba(0, 0, 0, 0.4);
+	box-shadow: 0 0 0 2px #e6c15a;
 }
 .tcg-mon.drop-hot .tcg-card-inner,
 .tcg-mon.empty.drop-hot {
-	box-shadow: 0 0 0 3px #ffe566, 0 10px 18px rgba(0, 0, 0, 0.5);
-	filter: brightness(1.12);
+	box-shadow: 0 0 0 2px #e6c15a;
+	filter: none;
 }
 .tcg-mon.empty.drop-ok,
 .tcg-mon.empty.drop-hot {
-	border-color: #7dffb3;
-	color: #e8ffe8;
+	border-color: #e6c15a;
+	color: #f0d78a;
 }
 .tcg-table.is-dragging .tcg-mon:not(.drop-ok),
 .tcg-table.is-dragging .tcg-pile.discard:not(.drop-ok),
@@ -1010,10 +975,11 @@
 .tcg-dock {
 	display: flex;
 	align-items: flex-end;
-	justify-content: center;
+	justify-content: flex-end;
+	gap: 8px;
 	flex: 0 0 auto;
 	z-index: 4;
-	padding: 10px 4px 4px;
+	padding: 10px 8px 4px;
 	min-height: 56px;
 	margin-top: 6px;
 	background: transparent;
@@ -1127,16 +1093,17 @@
 	opacity: 0.85;
 }
 .tcg-hand-mine .tcg-card-playable .tcg-card-inner {
-	box-shadow: 0 0 0 2px rgba(255, 220, 100, 0.85), 0 6px 14px rgba(0, 0, 0, 0.45);
+	border-color: #e6c15a;
+	box-shadow: none;
 }
 
 .tcg-card-playable .tcg-card-inner {
-	border-color: #7dffb3;
-	box-shadow: 0 0 0 2px rgba(120, 255, 170, 0.55), 0 6px 14px rgba(0, 0, 0, 0.45);
+	border-color: #e6c15a;
+	box-shadow: none;
 }
 .tcg-card-selected .tcg-card-inner {
-	border-color: #ffd54a;
-	box-shadow: 0 0 0 3px #ffd54a;
+	border-color: #e6c15a;
+	box-shadow: 0 0 0 2px #e6c15a;
 }
 .tcg-card img {
 	display: block;
@@ -1228,21 +1195,22 @@ span.tcg-card-backface {
 }
 .tcg-mon.legal .tcg-card-inner,
 .tcg-mon.empty.legal {
-	box-shadow: 0 0 0 3px #ffe566, 0 0 18px rgba(255, 220, 90, 0.6);
-	animation: tcg-pulse 1.4s ease-in-out infinite;
+	box-shadow: 0 0 0 2px #e6c15a;
+	animation: none;
 	cursor: pointer;
 }
 .tcg-mon.legal:hover .tcg-card-inner,
 .tcg-mon.empty.legal:hover {
-	box-shadow: 0 0 0 3px #fff3a0, 0 0 26px rgba(255, 230, 120, 0.85);
-	transform: translateY(-3px) scale(1.03);
-	transition: transform 0.15s ease, box-shadow 0.15s ease;
+	box-shadow: 0 0 0 2px #f0d48a;
+	transform: none;
 }
 .tcg-hand-mine .tcg-card-playable .tcg-card-inner {
-	box-shadow: 0 0 0 2px rgba(253, 224, 71, 0.85), 0 6px 16px rgba(255, 210, 80, 0.35);
+	border-color: #e6c15a;
+	box-shadow: none;
 }
 .tcg-hand-mine .tcg-card-selected .tcg-card-inner {
-	box-shadow: 0 0 0 3px #fff, 0 0 0 6px #facc15, 0 10px 22px rgba(250, 204, 21, 0.45);
+	border-color: #e6c15a;
+	box-shadow: 0 0 0 2px #e6c15a;
 	transform: translateY(-18px) scale(1.08);
 }
 .tcg-hp {
@@ -3771,7 +3739,7 @@ span.tcg-card-backface {
 		height: 110px;
 		max-height: min(110px, 100%);
 	}
-	.tcg-name { max-width: 100px; }
+	.tcg-name { max-width: 140px; }
 	.fx-play-card.reveal { width: min(180px, 50vw); }
 	.fx-dmg-num { font-size: 32px; }
 	.fx-ko-stamp { font-size: 48px; }
@@ -3844,8 +3812,9 @@ span.tcg-card-backface {
 		margin: 0;
 		padding: 6px 4px env(safe-area-inset-bottom, 0px);
 		display: flex;
-		align-items: flex-start;
-		justify-content: center;
+		align-items: flex-end;
+		justify-content: flex-end;
+		gap: 6px;
 		background: linear-gradient(180deg, transparent 0%, rgba(4, 10, 24, 0.55) 28%, rgba(4, 10, 24, 0.82) 100%);
 		pointer-events: none;
 	}
@@ -3853,8 +3822,13 @@ span.tcg-card-backface {
 		pointer-events: auto;
 		height: 56px;
 		padding: 0 8px;
-		max-width: 100%;
+		max-width: calc(100% - 96px);
 	}
+	.tcg-dock .tcg-player.me.dock {
+		pointer-events: auto;
+		padding-bottom: env(safe-area-inset-bottom, 0px);
+	}
+	.tcg-dock .tcg-player.me.dock .tcg-name { max-width: 88px; }
 	.tcg-hand-mine .tcg-card-md {
 		width: 52px;
 		height: 72px;
@@ -3918,7 +3892,7 @@ span.tcg-card-backface {
 		height: 84px;
 		max-height: min(84px, 100%);
 	}
-	.tcg-name { max-width: 72px; font-size: 9pt; }
+	.tcg-name { max-width: 110px; font-size: 9pt; }
 }
 
 /* Phone: Chat ↔ Board toggle */
@@ -4360,7 +4334,7 @@ span.tcg-card-backface {
 		z-index: 24;
 		background: linear-gradient(180deg, rgba(0, 0, 0, 0.82), rgba(0, 0, 0, 0.45) 78%, transparent);
 	}
-	.tcg-hud-tools { width: 100%; min-height: 28px; }
+	.tcg-hud-tools { flex: 0 0 72px; width: 72px; min-height: 28px; }
 	.tcg-chrome.live {
 		/* Drop under the HUD row on narrow boards. */
 		top: 48px;
@@ -4461,7 +4435,8 @@ span.tcg-card-backface {
 		animation: none;
 	}
 	.tcg-hand-mine .tcg-card-playable .tcg-card-inner {
-		box-shadow: 0 0 0 2px rgba(255, 220, 100, 0.95), 0 0 14px rgba(255, 220, 100, 0.45), 0 6px 14px rgba(0, 0, 0, 0.45);
+		border-color: #e6c15a;
+		box-shadow: none;
 	}
 	.tcg-live-controls { gap: 10px; }
 	.tcg-action-menu { padding: 0; align-items: flex-end; }
