@@ -154,7 +154,11 @@ export function isTcgPacked(packed: string | undefined | null): boolean {
 export function loadTcgCardIndex(): Promise<TcgCardRow[]> {
 	if (cardIndex) return Promise.resolve(cardIndex);
 	if (loadPromise) return loadPromise;
-	loadPromise = Net('/tcg-cards-index.json').get()
+	// The card index ships with this client. Net would send a root path to the sprite host.
+	const indexUrl = (typeof document !== 'undefined' && document.location?.host) ?
+		document.location.protocol + '//' + document.location.host + '/tcg-cards-index.json' :
+		'/tcg-cards-index.json';
+	loadPromise = Net(indexUrl).get()
 		.then(text => {
 			const rows = JSON.parse(text) as TcgCardRow[];
 			if (!Array.isArray(rows)) throw new Error('tcg-cards-index.json');

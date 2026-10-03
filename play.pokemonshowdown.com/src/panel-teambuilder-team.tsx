@@ -52,7 +52,10 @@ class TeamRoom extends PSRoom {
 	}
 	setFormat(format: string) {
 		const team = this.team;
-		team.format = toID(format);
+		let id = toID(format);
+		// The ladder id is `tcgpocket`; saved decks use the teambuilder id `gen6tcgpocket`.
+		if (id.replace(/^gen\d/, '').startsWith('tcg')) id = PS.teams.teambuilderFormat(id);
+		team.format = id;
 	}
 	load() {
 		PS.teams.loadTeam(this.team, true)?.then(() => {

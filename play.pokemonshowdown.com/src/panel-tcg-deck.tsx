@@ -103,9 +103,11 @@ export class TcgDeckEditor extends preact.Component<{
 	};
 
 	override componentDidUpdate(prev: this['props']) {
-		if (prev.team !== this.props.team || prev.team.format !== this.props.team.format) {
+		// The team object is mutated in place, so compare against editor state.
+		const format = tcgDeckFormatOf(this.props.team.format);
+		if (format !== this.state.format) {
 			this.setState({
-				format: tcgDeckFormatOf(this.props.team.format),
+				format,
 				ids: unpackTcgDeck(this.props.team.packedTeam),
 				serverErrors: null,
 			});

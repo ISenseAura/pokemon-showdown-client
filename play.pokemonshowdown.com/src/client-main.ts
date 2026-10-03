@@ -513,7 +513,8 @@ class PSTeams extends PSStreamModel<'team' | 'format'> {
 		let bracketIndex = line.indexOf(']');
 		if (bracketIndex > pipeIndex) bracketIndex = -1;
 		let leftBracketIndex = line.indexOf('[');
-		if (leftBracketIndex < 0) leftBracketIndex = 0;
+		// `[` after `|` is a TCG deck JSON array, not an uploaded team id.
+		if (leftBracketIndex < 0 || leftBracketIndex > pipeIndex) leftBracketIndex = 0;
 		const isBox = line.slice(0, bracketIndex).endsWith('-box');
 		let slashIndex = line.lastIndexOf('/', pipeIndex);
 		if (slashIndex < 0) slashIndex = bracketIndex; // line.slice(slashIndex + 1, pipeIndex) will be ''
