@@ -1035,14 +1035,15 @@ class BattleForfeitPanel extends PSRoomPanel {
 
 	override render() {
 		const room = this.props.room;
-		const battleRoom = room.getParent() as BattleRoom;
+		const battleRoom = room.getParent() as BattleRoom | null;
+		const showReplace = !!(battleRoom?.battle && !battleRoom.battle.rated);
 
 		return <PSPanelWrapper room={room} width={480}><div class="pad">
 			<p>Forfeiting makes you lose the battle. Are you sure?</p>
 			<p>
 				<button data-cmd="/closeand /inopener /closeand /forfeit" class="button"><strong>Forfeit and close</strong></button> {}
 				<button data-cmd="/closeand /inopener /forfeit" class="button">Just forfeit</button> {}
-				{battleRoom.battle && !battleRoom.battle.rated && <button type="button" data-href="replaceplayer" class="button">
+				{showReplace && <button type="button" data-href="replaceplayer" class="button">
 					Replace player
 				</button>} {}
 				<button type="button" data-cmd="/close" class="button">

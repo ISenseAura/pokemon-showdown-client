@@ -23,7 +23,11 @@ import type { Args } from "./battle-text-parser";
 import { ModifiableValue } from "./battle-tooltips";
 import { Net } from "./client-connection";
 import { BattleLog } from "./battle-log";
-import { TcgBoard, isTcgBattleId, chatEntryForEvent, chatHtmlForEntry, noteTcgMons, loadPaperNames, type TcgAction, type TcgEvent, type TcgPokemonView, type TcgSnapshot } from "./battle-tcg";
+import {
+	TcgBoard, isTcgBattleId, chatEntryForEvent, chatHtmlForEntry, noteTcgMons, loadPaperNames, applyTcgEvents,
+	normalizeTcgEnergy,
+	type TcgAction, type TcgEvent, type TcgPokemonView, type TcgSnapshot,
+} from "./battle-tcg";
 
 type BattleDesc = {
 	id: RoomID,
@@ -164,6 +168,11 @@ export class BattleRoom extends ChatRoom {
 	overlayActive: 'move' | 'switch' | null = null;
 	tcgMode = isTcgBattleId(this.id);
 	tcgSnapshot: TcgSnapshot | null = null;
+	/**
+	 * Format rules arrive once on the first snapshot of a battle (server omits them afterward).
+	 * Merged into every later snapshot so the board always has prizes/bench/energyZone.
+	 */
+	tcgFormat: TcgSnapshot['format'] = undefined;
 	/** Snapshot for the beat currently animating. The board keeps the previous one until that beat ends. */
 	tcgFxSnapshot: TcgSnapshot | null = null;
 	tcgEvents: TcgEvent[] = [];
@@ -182,6 +191,8 @@ export class BattleRoom extends ChatRoom {
 	tcgQueue: {
 		snapshot?: TcgSnapshot,
 		events?: TcgEvent[],
+		/** Legal actions for this seat; present even when the server omits the board snapshot. */
+		actions?: TcgAction[],
 		wait?: boolean,
 		animate: boolean,
 		/** |request| repeats events that |tcg| will log. Don't write them again. */
@@ -315,12 +326,10 @@ export class BattleRoom extends ChatRoom {
 		this.tcgViewpoint = this.tcgViewpoint === 0 ? 1 : 0;
 		this.update(null);
 	};
-	/** Snapshot for the board with spectator viewpoint applied. */
-	tcgViewSnapshot(snap: TcgSnapshot | null): TcgSnapshot | null {
-		if (!snap) return null;
-		if (this.isTcgPlayer() && !this.tcgEnded && !this.tcgReplayMode) return snap;
-		if (snap.you != null && !this.tcgReplayMode && !this.tcgEnded) return snap;
-		return { ...snap, you: this.tcgViewpoint };
+	/** Layout seat at the bottom. Does not rewrite `snapshot.you` (spectators stay `you: null`). */
+	tcgBoardViewpoint(): 0 | 1 {
+		if (this.tcgViewpoint === 0 || this.tcgViewpoint === 1) return this.tcgViewpoint;
+		return this.tcgSide ?? 0;
 	}
 	turnAtHistoryIndex(index: number): number {
 		let turn = 0;
@@ -471,6 +480,7 @@ export class BattleRoom extends ChatRoom {
 		this.tcgReplayMode = true;
 		this.tcgEnded = true;
 		this.tcgSide = null;
+		this.tcgFormat = replay.snapshot.format;
 		this.tcgWinner = data.winner || null;
 		this.tcgP1 = { id: toID(data.p1 || ''), name: data.p1 || 'Player 1' };
 		this.tcgP2 = { id: toID(data.p2 || ''), name: data.p2 || 'Player 2' };
@@ -526,6 +536,9 @@ export class BattleRoom extends ChatRoom {
 			}
 		}
 		if (!item.replay) {
+			// The backlog arrives only once we're logged in, which can be well after the room was
+			// built; measure the catch-up window from the first payload so a rejoin never animates.
+			if (!this.tcgHistory.length) this.tcgSyncUntil = Math.max(this.tcgSyncUntil, Date.now() + 2500);
 			this.tcgHistory.push({
 				...item,
 				events: item.events?.slice(),
@@ -536,8 +549,14 @@ export class BattleRoom extends ChatRoom {
 			// Catch-up burst after rejoining a game in progress: write the log, jump the board, no beats.
 			// A fresh game is still in setup here, so its opening beats keep animating.
 			item.animate = false;
-			if (this.tcgPlaying) this.tcgQueue.push(item);
-			else this.commitTcg(item, false);
+			if (this.tcgPlaying || this.tcgQueue.length) {
+				// The opening beats of the backlog started animating before we knew this was a
+				// rejoin; drop them and jump straight to the newest board.
+				this.tcgQueue.push(item);
+				this.skipTcgToEnd();
+			} else {
+				this.commitTcg(item, false);
+			}
 			return;
 		}
 		// A request must not paint the resulting board while an earlier beat is still playing.
@@ -570,7 +589,11 @@ export class BattleRoom extends ChatRoom {
 			return;
 		}
 		this.tcgPlaying = true;
-		this.tcgFxSnapshot = item.snapshot || null;
+		// Soft batches omit the board; predict the post-batch state so FX overlays (energy, etc.) resolve.
+		this.tcgFxSnapshot = item.snapshot || (
+			this.tcgSnapshot && item.events?.length ?
+				applyTcgEvents(this.tcgSnapshot, item.events, item.actions) : null
+		);
 		if (!this.tcgSnapshot && item.snapshot) this.tcgSnapshot = item.snapshot;
 		this.tcgEvents = item.events || [];
 		this.tcgFxKey++;
@@ -580,6 +603,10 @@ export class BattleRoom extends ChatRoom {
 	/** Apply the board for one payload. Logs were already written beat-by-beat when `paced` is set. */
 	commitTcg(item: BattleRoom['tcgQueue'][number], paced: boolean) {
 		if (item.snapshot) {
+			if (item.snapshot.format) this.tcgFormat = item.snapshot.format;
+			else if (this.tcgFormat) item.snapshot = { ...item.snapshot, format: this.tcgFormat };
+			if (item.actions) item.snapshot = { ...item.snapshot, actions: item.actions };
+			normalizeTcgEnergy(item.snapshot);
 			this.tcgSnapshot = item.snapshot;
 			if (item.snapshot.status === 'over') {
 				this.tcgEnded = true;
@@ -587,11 +614,14 @@ export class BattleRoom extends ChatRoom {
 					this.tcgWinner = item.snapshot.players?.[item.snapshot.winner]?.name || null;
 				}
 			}
+		} else if (this.tcgSnapshot) {
+			this.tcgSnapshot = applyTcgEvents(this.tcgSnapshot, item.events, item.actions);
 		}
 		if (item.markEnded) this.tcgEnded = true;
 		if (item.winner !== undefined) this.tcgWinner = item.winner;
 		if (item.wait != null) this.tcgWait = item.wait;
-		else if (item.snapshot) this.tcgWait = !item.snapshot.actions?.length;
+		else if (item.actions) this.tcgWait = !item.actions.length;
+		else if (this.tcgSnapshot) this.tcgWait = !this.tcgSnapshot.actions?.length;
 		if (!paced && !item.silent && item.events?.length) {
 			for (const ev of item.events) this.revealTcgEvent(ev);
 		}
@@ -662,12 +692,28 @@ export class BattleRoom extends ChatRoom {
 
 	loadReplay() {
 		const replayid = this.id.slice(7);
-		const urls = [
+		const tcg = isTcgBattleId(this.id) || this.tcgMode;
+		const urls = tcg ? [] as string[] : [
 			`https://${Config.routes.replays}/${replayid}.json`,
 			`https://replay.pokemonshowdown.com/${replayid}.json`,
 		];
+		if (tcg && PS.server?.host) {
+			const proto = PS.server.protocol === 'http' ? 'http' : 'https';
+			const port = PS.server.httpport || (proto === 'http' ? PS.server.port : 0);
+			const origin = `${proto}://${PS.server.host}${port && port !== 80 && port !== 443 ? `:${port}` : ''}`;
+			urls.push(`${origin}/replay/${replayid}.json`);
+		}
+		if (tcg) {
+			urls.push(`/replay/${replayid}.json`);
+			if (Config.routes?.client) urls.push(`https://${Config.routes.client}/replay/${replayid}.json`);
+		}
 		const tryFetch = (i: number): Promise<string> =>
-			Net(urls[i]).get().catch(() => (i + 1 < urls.length ? tryFetch(i + 1) : ''));
+			Net(urls[i]).get().then(data => {
+				const body = String(data || '').trim();
+				if (body.startsWith('{') || body.startsWith('[')) return body;
+				if (i + 1 < urls.length) return tryFetch(i + 1);
+				return '';
+			}).catch(() => (i + 1 < urls.length ? tryFetch(i + 1) : ''));
 		tryFetch(0).then(data => {
 			try {
 				const replay = JSON.parse(data);
@@ -678,6 +724,8 @@ export class BattleRoom extends ChatRoom {
 					const raw = marker >= 0 ? log.slice(marker) :
 						log.trimStart().startsWith('{') ? log : '';
 					if (!raw) throw new Error('no tcg replay');
+					this.connectMode = null;
+					this.connectError = null;
 					this.loadTcgReplayPayload(raw, `[${replay.format}] ${replay.players?.join(' vs. ') || ''}`);
 					return;
 				}
@@ -748,6 +796,8 @@ class TimerButton extends preact.Component<{ room: BattleRoom, top: number, inli
 		if (!this.timerInterval && kicking) {
 			this.timerInterval = setInterval(() => {
 				if (room.tcgMode) {
+					// Match PS: only tick while you still have a choice to make.
+					if (room.tcgWait || room.tcgEnded) return;
 					if (typeof room.tcgKickingInactive === 'number' && room.tcgKickingInactive > 1) {
 						room.tcgKickingInactive--;
 						if (room.tcgTotalTimeLeft) room.tcgTotalTimeLeft--;
@@ -1070,7 +1120,18 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 			return;
 		case 'request':
 			if (!args[1]) return;
-			this.applyTcgPayload(JSON.parse(args[1]), true);
+			try {
+				const data = JSON.parse(args[1]) as {
+					tcg?: boolean, events?: TcgEvent[], snapshot?: TcgSnapshot, wait?: boolean, actions?: TcgAction[],
+				};
+				if (data.tcg && data.wait != null) {
+					room.tcgWait = !!data.wait;
+					room.update(null);
+				}
+				// Slim |request| is timer-only (wait). Fat echoes from older servers still apply silently.
+				if (!data.events?.length && !data.snapshot) return;
+				this.applyTcgPayload(data, true);
+			} catch {}
 			return;
 		case 'player': {
 			// |player|p1|Name|avatar|rating|
@@ -1086,8 +1147,8 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 			return;
 		}
 		case 'inactive': {
-			room.log?.add(args);
 			const msg = args[1] || '';
+			if (!msg.startsWith('Time left: ')) room.log?.add(args);
 			if (msg.startsWith('Time left: ')) {
 				const [time, totalTime] = msg.split(' | ');
 				room.tcgKickingInactive = parseInt(time.slice(11), 10) || true;
@@ -1163,12 +1224,16 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 	}
 	applyTcgPayload(data: {
 		tcg?: boolean, kind?: string, wait?: boolean, seq?: number,
-		snapshot?: TcgSnapshot, events?: TcgEvent[],
+		snapshot?: TcgSnapshot, events?: TcgEvent[], actions?: TcgAction[],
 	}, skipFx = false) {
 		const room = this.props.room;
 		if (!data) return;
 		if (data.kind === 'watch' && room.tcgSnapshot?.you != null) {
 			return;
+		}
+		if (data.snapshot) {
+			if (data.snapshot.format) room.tcgFormat = data.snapshot.format;
+			else if (room.tcgFormat) data.snapshot = { ...data.snapshot, format: room.tcgFormat };
 		}
 		if (data.snapshot && !data.snapshot.format?.energyZone &&
 			!data.snapshot.players?.some(p => p?.energyZone)) {
@@ -1190,15 +1255,24 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 				name: data.snapshot.players[1].name,
 			};
 		}
-		if (PS.prefs.autotimer && room.isTcgPlayer() && !room.tcgKickingInactive && !room.autoTimerActivated) {
+		if (room.isTcgPlayer() && !room.tcgKickingInactive && !room.autoTimerActivated && !room.tcgEnded) {
 			this.send('/timer on');
 			room.autoTimerActivated = true;
 		}
-		const wait = data.wait != null ? data.wait : (data.snapshot ? !data.snapshot.actions?.length : undefined);
-		const ended = data.snapshot?.status === 'over';
+		const actions = data.actions ?? data.snapshot?.actions;
+		const wait = data.wait != null ? data.wait :
+			(actions ? !actions.length : (data.snapshot ? !data.snapshot.actions?.length : undefined));
+		const ended = data.snapshot?.status === 'over' ||
+			!!data.events?.some(ev => ev.type === 'over');
 		let winner: string | null | undefined;
 		if (ended && data.snapshot?.winner != null) {
 			winner = data.snapshot.players?.[data.snapshot.winner]?.name || null;
+		}
+		if (ended && winner == null) {
+			const over = data.events?.find(ev => ev.type === 'over');
+			if (over && over.winner != null && room.tcgSnapshot?.players) {
+				winner = room.tcgSnapshot.players[over.winner as number]?.name || null;
+			}
 		}
 		// The server may send the same batch twice (the opening |tcg| payload is repeated);
 		// animate each event once. The silent |request| echo never animates, so it is not counted.
@@ -1212,6 +1286,7 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		room.enqueueTcg({
 			snapshot: data.snapshot,
 			events,
+			actions,
 			wait,
 			animate: !skipFx && !!events?.length && !PS.prefs.noanim,
 			silent: skipFx,
@@ -1267,6 +1342,13 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		room.tcgWait = true;
 		room.sendDirect(`/choose ${JSON.stringify(action)}`);
 		room.update(null);
+		window.setTimeout(() => {
+			if (!room.tcgWait || room.tcgEnded) return;
+			if (room.tcgSnapshot?.actions?.length) {
+				room.tcgWait = false;
+				room.update(null);
+			}
+		}, 4500);
 	};
 	receiveRequest(request: BattleRequest | null) {
 		const room = this.props.room;
@@ -1307,6 +1389,7 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		if (room.connectMode !== 'deleted' && room.connectMode !== 'not-found') {
 			return null;
 		}
+		if (room.tcgMode && (room.tcgSnapshot || room.tcgReplayMode)) return null;
 		return <div class="pad"><div class="broadcast-red pad">
 			<h3>{room.connectError || "Error"}</h3>
 			<p class="buttonbar"><button class="button" data-cmd="/close"><strong>Close</strong></button></p>
@@ -2080,7 +2163,9 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		const atStart = room.tcgSeekIndex === 0 ||
 			(room.tcgSeekIndex < 0 && room.tcgHistory.length <= 1 && !room.tcgQueue.length);
 		const canScrub = ended || (isSpec && !ended);
-		const showTimer = isPlayer && !ended;
+		// The server drops the game (and its timer) as soon as the match ends, while the client
+		// is still animating the final beats; hide Timer from the latest server status, not the FX one.
+		const showTimer = isPlayer && !ended && room.tcgLatestStatus !== 'over';
 		const showSpecLive = !ended && isSpec;
 		const showScrub = ended && canScrub;
 		const showEndPlayer = ended && isPlayer && !room.tcgReplayMode;
@@ -2088,8 +2173,10 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		if (!showTimer && !showSpecLive && !showScrub && !showEndPlayer && !showEndSpec) return null;
 
 		const mode = ended ? 'ended' : showSpecLive ? 'spec' : 'live';
+		// Viewing an earlier turn: the result banner is hidden, so centre the bar in the mid-board gap.
+		const scrubbing = ended && room.tcgSnapshot?.status !== 'over';
 		return <div
-			class={`tcg-chrome ${mode}`}
+			class={`tcg-chrome ${mode}${scrubbing ? ' scrubbing' : ''}`}
 			role="complementary"
 			aria-label="TCG Battle Controls"
 		>
@@ -2332,11 +2419,12 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		const boardW = layout === 'top-and-bottom' ?
 			Math.max(battleWidth, Math.min(room.width, 960)) :
 			Math.max(battleWidth, room.width - chatWidth);
-		const viewSnap = room.tcgViewSnapshot(room.tcgSnapshot);
-		const viewFx = room.tcgViewSnapshot(room.tcgFxSnapshot);
+		const viewSnap = room.tcgSnapshot;
+		const viewFx = room.tcgFxSnapshot;
 		const board = viewSnap ? <TcgBoard
 			snapshot={viewSnap}
 			fxSnapshot={viewFx}
+			viewpoint={room.tcgBoardViewpoint()}
 			events={room.tcgEvents}
 			fxKey={room.tcgFxKey}
 			halt={room.tcgHalt}

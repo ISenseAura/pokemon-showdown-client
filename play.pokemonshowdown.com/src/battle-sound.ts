@@ -59,7 +59,7 @@ export class BattleBGM {
 		this.willRewind = false;
 		this.isActuallyPlaying = true;
 		this.sound.volume = BattleSound.bgmVolume / 100;
-		this.sound.play();
+		void this.sound.play().catch(() => {});
 		this.updateTime();
 	}
 	actuallyPause() {
@@ -116,7 +116,9 @@ export const BattleSound = new class {
 		if (this.soundCache[url]) return this.soundCache[url];
 		try {
 			const sound = document.createElement('audio');
-			sound.src = `https://${Config.routes.client}/${url}`;
+			sound.preload = 'auto';
+			const abs = /^(https?:)?\/\//i.test(url) || url.startsWith('/');
+			sound.src = abs ? url : `/${url.replace(/^\.?\//, '')}`;
 			sound.volume = this.effectVolume / 100;
 			this.soundCache[url] = sound;
 			return sound;
@@ -130,9 +132,10 @@ export const BattleSound = new class {
 	playSound(url: string, volume: number) {
 		if (!volume) return;
 		const effect = this.getSound(url);
-		if (effect) {
+		if (effect && effect.src && effect.error == null) {
 			effect.volume = volume / 100;
-			effect.play();
+			const p = effect.play();
+			if (p && typeof p.catch === 'function') void p.catch(() => {});
 		}
 	}
 
