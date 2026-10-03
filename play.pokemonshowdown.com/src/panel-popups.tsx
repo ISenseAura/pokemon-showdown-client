@@ -1730,9 +1730,6 @@ class BattleOptionsPanel extends PSRoomPanel {
 					/> Skip the end turn confirmation
 				</label>
 			</p>
-			<p class="tcg-opt-note">
-				End Turn sends immediately, even when you can still play a card, attack, or retreat.
-			</p>
 			<p>
 				<label class="checkbox">
 					<input
@@ -1740,9 +1737,6 @@ class BattleOptionsPanel extends PSRoomPanel {
 						type="checkbox" onChange={this.handleTcgSetting}
 					/> Skip animations
 				</label>
-			</p>
-			<p class="tcg-opt-note">
-				The board updates as soon as each action resolves.
 			</p>
 			<p><strong>Layout</strong></p>
 			<p>

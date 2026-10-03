@@ -4475,13 +4475,6 @@ span.tcg-card-backface {
 	.tcg-float-hint { white-space: normal; line-height: 1.3; }
 }
 
-.pad .tcg-opt-note {
-	margin: -8px 0 12px 22px;
-	font-size: 11px;
-	line-height: 1.35;
-	opacity: 0.72;
-}
-
 @media (prefers-reduced-motion: reduce) {
 	.tcg-table *, .tcg-table *::before, .tcg-table *::after {
 		animation-duration: 0.01ms !important;
