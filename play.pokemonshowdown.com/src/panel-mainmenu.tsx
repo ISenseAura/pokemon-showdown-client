@@ -698,9 +698,12 @@ class MainMenuPanel extends PSRoomPanel<MainMenuRoom> {
 	renderBackgroundCredit() {
 		const attrib = PSBackground.attrib;
 		if (!attrib) return null;
+		const label = <>"{attrib.title}" <small>background by {attrib.artist}</small></>;
 		return (
 			<small>
-				<a href={attrib.url} target="_blank" class="subtle">"{attrib.title}" <small>background by {attrib.artist}</small></a>
+				{attrib.url && attrib.url.length > 0 ?
+					<a href={attrib.url} target="_blank" class="subtle">{label}</a> :
+					<span class="subtle">{label}</span>}
 			</small>
 		);
 	}

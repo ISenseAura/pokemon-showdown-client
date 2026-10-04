@@ -160,19 +160,19 @@ export const PSBackground = new class extends PSStreamModel<string | null> {
 
 		// curid
 		if (!bgid || bgid === 'waterfall') {
-			if (location.host === 'smogtours.psim.us') {
-				bgid = 'shaymin';
-			} else {
-				const bgs = ['horizon', 'ocean', 'shaymin', 'charizards'];
-				bgid = bgs[Math.floor(Math.random() * bgs.length)];
-				// if someone clicked the random button, try to roll a different bg than before
-				if (bgid === this.curId) bgid = bgs[Math.floor(Math.random() * bgs.length)];
-			}
+			bgid = 'playtcg';
 		}
 		this.curId = bgid;
 
 		if (!bgUrl) {
-			bgUrl = (bgid === 'solidblue' ? '#344b6c' : PSURL + 'fx/client-bg-' + bgid + '.jpg');
+			if (bgid === 'solidblue') {
+				bgUrl = '#1a406e';
+			} else if (bgid === 'playtcg') {
+				// Ship with this client; do not load from the public PS CDN.
+				bgUrl = '/fx/client-bg-playtcg.jpg';
+			} else {
+				bgUrl = PSURL + 'fx/client-bg-' + bgid + '.jpg';
+			}
 		}
 
 		// April Fool's 2016 - Digimon theme
@@ -184,6 +184,21 @@ export const PSBackground = new class extends PSStreamModel<string | null> {
 		// menuColors, attrib
 		let attrib = null;
 		switch (bgid) {
+		case 'playtcg':
+			menuColors = [
+				"42,55%",
+				"210,38%",
+				"195,36%",
+				"220,40%",
+				"200,34%",
+				"215,24%",
+			];
+			attrib = {
+				url: '',
+				title: 'Playmat',
+				artist: 'p9',
+			};
+			break;
 		case 'horizon':
 			menuColors = [
 				"318.87640449438203,35.177865612648226%",
@@ -345,24 +360,23 @@ PSBackground.subscribe(bgUrl => {
 		if (bgUrl.startsWith('#')) {
 			background = bgUrl;
 		} else if (PSBackground.curId !== 'custom') {
-			background = `#546bac url(${bgUrl}) no-repeat left center fixed`;
+			background = `#1a406e url(${bgUrl}) no-repeat left center fixed`;
 		} else {
-			background = `#546bac url(${bgUrl}) no-repeat center center fixed`;
+			background = `#1a406e url(${bgUrl}) no-repeat center center fixed`;
 		}
 		document.body.style.background = background;
 		document.body.style.backgroundSize = 'cover';
 	}
 
-	// main menu button colors
+	// main menu button colors — fixed Play TCG palette (gold Battle + cool blues)
 	let cssBuf = ``;
+	const tcgMenuColors = ['42,55%', '210,38%', '195,36%', '220,40%', '200,34%', '215,24%'];
 	let n = 0;
-	if (PSBackground.menuColors) {
-		for (const hs of PSBackground.menuColors) {
-			n++;
-			cssBuf += `body .button.mainmenu${n} { background: linear-gradient(to bottom,  hsl(${hs},72%),  hsl(${hs},52%)); border-color: hsl(${hs},40%); }\n`;
-			cssBuf += `body .button.mainmenu${n}:hover { background: linear-gradient(to bottom,  hsl(${hs},62%),  hsl(${hs},42%)); border-color: hsl(${hs},21%); }\n`;
-			cssBuf += `body .button.mainmenu${n}:active { background: linear-gradient(to bottom,  hsl(${hs},42%),  hsl(${hs},58%)); border-color: hsl(${hs},21%); }\n`;
-		}
+	for (const hs of tcgMenuColors) {
+		n++;
+		cssBuf += `body .button.mainmenu${n} { background: linear-gradient(to bottom,  hsl(${hs},72%),  hsl(${hs},52%)); border-color: hsl(${hs},40%); }\n`;
+		cssBuf += `body .button.mainmenu${n}:hover { background: linear-gradient(to bottom,  hsl(${hs},62%),  hsl(${hs},42%)); border-color: hsl(${hs},21%); }\n`;
+		cssBuf += `body .button.mainmenu${n}:active { background: linear-gradient(to bottom,  hsl(${hs},42%),  hsl(${hs},58%)); border-color: hsl(${hs},21%); }\n`;
 	}
 	let buttonStyleElem = document.getElementById('mainmenubuttoncolors');
 	if (!buttonStyleElem) {

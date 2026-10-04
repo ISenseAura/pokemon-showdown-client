@@ -1382,6 +1382,10 @@ class BackgroundListPanel extends PSRoomPanel {
 			<div style="clear: left"></div>
 			<p><strong>Official</strong></p>
 			<div class="bglist">
+				<button onClick={this.setBg} value="playtcg" class={option('playtcg')}>
+					<span class="bg" style="background:#1a406e url(/fx/client-bg-playtcg.jpg) center/cover"></span>{}
+					Playmat
+				</button>
 				<button onClick={this.setBg} value="charizards" class={option('charizards')}>
 					<span class="bg" style="background-position: 0 -0px"></span>{}
 					Charizards

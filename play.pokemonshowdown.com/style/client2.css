@@ -26,7 +26,7 @@ body {
 	font-family: Verdana, Helvetica, Arial, sans-serif;
 
 	/* see https://pokemonshowdown.com/credits */
-	background: #344b6c url(../fx/client-bg-charizards.jpg) no-repeat left center fixed;
+	background: #1a406e url(../fx/client-bg-playtcg.jpg) no-repeat left center fixed;
 	-webkit-background-size: cover;
 	-moz-background-size: cover;
 	-o-background-size: cover;
@@ -73,14 +73,14 @@ pre {
 .construction {
 	border: 15px solid transparent;
 	padding: 5px 10px;
-	background: #d9ca28;
+	background: #e6c15a;
 	/* opera doesn't support single-arg linear-gradient */
-	background-image: linear-gradient(#d9ca28, #d9ca28), repeating-linear-gradient(
+	background-image: linear-gradient(#e6c15a, #e6c15a), repeating-linear-gradient(
 		-45deg,
-		#d9ca28,
-		#d9ca28 10px,
-		#292824 10px,
-		#292824 20px
+		#e6c15a,
+		#e6c15a 10px,
+		#1a406e 10px,
+		#1a406e 20px
 	);
 	background-origin: border-box;
 	background-clip: padding-box, border-box;
@@ -133,7 +133,7 @@ li::marker {
 .header {
 	position: relative;
 	height: 50px;
-	background: url(../fx/client-topbar-bg.png) repeat-x left top scroll;
+	background: linear-gradient(180deg, #2a528a 0%, #1a406e 70%, #16365c 100%);
 }
 .header h1 {
 	margin: 0;
@@ -150,10 +150,10 @@ li::marker {
 	bottom: 0;
 	width: 243px;
 	padding-right: 7px;
-	background: rgba(255,255,255,.3);
+	background: rgba(26, 64, 110, 0.78);
 }
 .dark .header, .dark .header-vertical {
-	background: rgba(0,0,0,.30);
+	background: rgba(12, 28, 48, 0.88);
 }
 
 .userbar {
@@ -172,11 +172,11 @@ li::marker {
 }
 .userbar .username {
 	font-weight: bold;
-	color: black;
-	text-shadow: 1px 1px 0 #f8f8f8, 1px -1px 0 #f8f8f8, -1px 1px 0 #f8f8f8, -1px -1px 0 #f8f8f8;
+	color: #f4f7fb;
+	text-shadow: 1px 1px 0 #0e2240, 1px -1px 0 #0e2240, -1px 1px 0 #0e2240, -1px -1px 0 #0e2240;
 }
 .dark .userbar .username, .dark .mini-header-right {
-	color: #DDD;
+	color: #f0f4fa;
 	text-shadow: 1px 1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, -1px -1px 0 #000;
 }
 .username {
@@ -199,9 +199,9 @@ li::marker {
 }
 
 .mini-header, .maintabbarbottom, .tabbar:after {
-	background: #f8f8f8;
-	border: solid 1px #AAAAAA;
-	color: black;
+	background: #1a406e;
+	border: solid 1px #c9a84a;
+	color: #f4f7fb;
 }
 .maintabbarbottom {
 	content: "";
@@ -213,10 +213,11 @@ li::marker {
 	height: 6px;
 	border-left-width: 0;
 	border-right-width: 0;
+	border-top: 1px solid #e6c15a;
 	margin: -1px 0 0 0;
 	-webkit-box-shadow: 0 1px 2px rgba(0,0,0,.2);
 	-moz-box-shadow: 0 1px 2px rgba(0,0,0,.2);
-	box-shadow: 0 1px 2px rgba(0,0,0,.2);
+	box-shadow: 0 1px 2px rgba(0,0,0,.25);
 }
 .mini-header {
 	position: absolute;
@@ -266,10 +267,10 @@ li::marker {
 	margin-right: 5px;
 }
 .mini-header-left.notifying {
-	color: #AA6600;
+	color: #e6c15a;
 }
 .dark .mini-header-left.notifying {
-	color: #72bcda;
+	color: #f0d78a;
 }
 .notification-badge {
 	position: absolute;
@@ -277,8 +278,8 @@ li::marker {
 	left: 13px;
 	width: 15px;
 	height: 15px;
-	background: #e9790d;
-	color: white;
+	background: #c9a84a;
+	color: #1a1408;
 	font-size: 9px;
 	font-weight: bold;
 	line-height: 14px;
@@ -314,12 +315,13 @@ li::marker {
 	margin: 0;
 }
 .dark .mini-header, .dark .maintabbarbottom, .dark .tabbar:after {
-	background: #555555;
-	border-color: #34373b;
-	color: #DDDDDD;
+	background: #122a4a;
+	border-color: #a8893a;
+	color: #f0f4fa;
 }
 .dark .maintabbarbottom {
-	border-bottom-color: #5A5A5A;
+	border-top-color: #e6c15a;
+	border-bottom-color: #0e2240;
 }
 
 .tabbar {
@@ -1091,29 +1093,29 @@ form.menugroup {
 	box-shadow: 0 1px 2px rgba(0,0,0,.1);
 }
 
-.button.mainmenu1 { background: linear-gradient(to bottom,  hsl(5,40%,72%),  hsl(5,40%,52%)); border-color: hsl(5,40%,40%); }
-.button.mainmenu1:hover { background: linear-gradient(to bottom,  hsl(5,40%,62%),  hsl(5,40%,42%)); }
-.button.mainmenu1:active { background: linear-gradient(to bottom,  hsl(5,40%,42%),  hsl(5,40%,58%)); }
+.button.mainmenu1 { background: linear-gradient(to bottom,  hsl(42,55%,68%),  hsl(40,52%,48%)); border-color: hsl(38,50%,36%); }
+.button.mainmenu1:hover { background: linear-gradient(to bottom,  hsl(42,55%,60%),  hsl(40,52%,40%)); }
+.button.mainmenu1:active { background: linear-gradient(to bottom,  hsl(40,52%,40%),  hsl(42,55%,54%)); }
 
-.button.mainmenu2 { background: linear-gradient(to bottom,  hsl(30,40%,72%),  hsl(30,40%,52%)); border-color: hsl(30,40%,40%); }
-.button.mainmenu2:hover { background: linear-gradient(to bottom,  hsl(30,40%,62%),  hsl(30,40%,42%)); }
-.button.mainmenu2:active { background: linear-gradient(to bottom,  hsl(30,40%,42%),  hsl(30,40%,58%)); }
+.button.mainmenu2 { background: linear-gradient(to bottom,  hsl(210,38%,70%),  hsl(210,36%,50%)); border-color: hsl(210,34%,38%); }
+.button.mainmenu2:hover { background: linear-gradient(to bottom,  hsl(210,38%,62%),  hsl(210,36%,42%)); }
+.button.mainmenu2:active { background: linear-gradient(to bottom,  hsl(210,36%,42%),  hsl(210,38%,56%)); }
 
-.button.mainmenu3 { background: linear-gradient(to bottom,  hsl(60,40%,62%),  hsl(60,40%,42%)); border-color: hsl(60,40%,40%); }
-.button.mainmenu3:hover { background: linear-gradient(to bottom,  hsl(60,40%,52%),  hsl(60,40%,32%)); }
-.button.mainmenu3:active { background: linear-gradient(to bottom,  hsl(60,40%,32%),  hsl(60,40%,48%)); }
+.button.mainmenu3 { background: linear-gradient(to bottom,  hsl(195,36%,66%),  hsl(195,34%,46%)); border-color: hsl(195,32%,34%); }
+.button.mainmenu3:hover { background: linear-gradient(to bottom,  hsl(195,36%,58%),  hsl(195,34%,38%)); }
+.button.mainmenu3:active { background: linear-gradient(to bottom,  hsl(195,34%,38%),  hsl(195,36%,52%)); }
 
-.button.mainmenu4 { background: linear-gradient(to bottom,  hsl(130,40%,72%),  hsl(130,40%,52%)); border-color: hsl(130,40%,40%); }
-.button.mainmenu4:hover { background: linear-gradient(to bottom,  hsl(130,40%,62%),  hsl(130,40%,42%)); }
-.button.mainmenu4:active { background: linear-gradient(to bottom,  hsl(130,40%,42%),  hsl(130,40%,58%)); }
+.button.mainmenu4 { background: linear-gradient(to bottom,  hsl(220,40%,70%),  hsl(220,38%,50%)); border-color: hsl(220,36%,38%); }
+.button.mainmenu4:hover { background: linear-gradient(to bottom,  hsl(220,40%,62%),  hsl(220,38%,42%)); }
+.button.mainmenu4:active { background: linear-gradient(to bottom,  hsl(220,38%,42%),  hsl(220,40%,56%)); }
 
-.button.mainmenu5 { background: linear-gradient(to bottom,  hsl(210,40%,72%),  hsl(210,40%,52%)); border-color: hsl(210,40%,40%); }
-.button.mainmenu5:hover { background: linear-gradient(to bottom,  hsl(210,40%,62%),  hsl(210,40%,42%)); }
-.button.mainmenu5:active { background: linear-gradient(to bottom,  hsl(210,40%,42%),  hsl(210,40%,58%)); }
+.button.mainmenu5 { background: linear-gradient(to bottom,  hsl(200,34%,68%),  hsl(200,32%,48%)); border-color: hsl(200,30%,36%); }
+.button.mainmenu5:hover { background: linear-gradient(to bottom,  hsl(200,34%,60%),  hsl(200,32%,40%)); }
+.button.mainmenu5:active { background: linear-gradient(to bottom,  hsl(200,32%,40%),  hsl(200,34%,54%)); }
 
-.button.mainmenu6 { background: linear-gradient(to bottom,  hsl(270,40%,72%),  hsl(270,40%,52%)); border-color: hsl(270,40%,40%); }
-.button.mainmenu6:hover { background: linear-gradient(to bottom,  hsl(270,40%,62%),  hsl(270,40%,42%)); }
-.button.mainmenu6:active { background: linear-gradient(to bottom,  hsl(270,40%,42%),  hsl(300,40%,58%)); }
+.button.mainmenu6 { background: linear-gradient(to bottom,  hsl(215,24%,66%),  hsl(215,22%,46%)); border-color: hsl(215,20%,34%); }
+.button.mainmenu6:hover { background: linear-gradient(to bottom,  hsl(215,24%,58%),  hsl(215,22%,38%)); }
+.button.mainmenu6:active { background: linear-gradient(to bottom,  hsl(215,22%,38%),  hsl(215,24%,52%)); }
 
 #ps-debug-menu {
 	display: none;
