@@ -280,6 +280,13 @@ function payEnergyAt(p: TcgPlayerView, index: number) {
 		if (j !== index) next.push(p.active.energy[j]);
 	}
 	p.active.energy = next;
+	if (p.active.energyCards?.length) {
+		const cards: string[] = [];
+		for (let j = 0; j < p.active.energyCards.length; j++) {
+			if (j !== index) cards.push(p.active.energyCards[j]);
+		}
+		p.active.energyCards = cards;
+	}
 }
 
 function clearPending(snap: TcgSnapshot) {
@@ -2688,7 +2695,7 @@ class TcgCardFace extends preact.Component<{
 	cardId?: string, image?: string, name?: string, size?: CardSize, selected?: boolean,
 	back?: boolean, playable?: boolean, arrive?: boolean, fanIndex?: number, fanCount?: number,
 	dragging?: boolean, pocket?: boolean,
-	onClick?: () => void,
+	onClick?: (ev?: MouseEvent) => void,
 	onInspect?: (p: Preview) => void,
 	onPointerDown?: (e: PointerEvent) => void,
 	/** Long-press opened the preview; cancel a play that pointer-up would send. */
@@ -2733,13 +2740,15 @@ class TcgCardFace extends preact.Component<{
 		if (Math.hypot(ev.clientX - this.holdX, ev.clientY - this.holdY) > 8) this.clearHold();
 	};
 	onClick = (ev: MouseEvent) => {
-		ev.stopPropagation();
 		if (this.held) {
 			this.held = false;
 			ev.preventDefault();
+			ev.stopPropagation();
 			return;
 		}
-		this.props.onClick?.();
+		if (!this.props.onClick) return; // let parents handle (e.g. discard pile browse)
+		ev.stopPropagation();
+		this.props.onClick(ev);
 	};
 	onImgError = (ev: Event) => {
 		const img = ev.currentTarget as HTMLImageElement | null;
@@ -3124,6 +3133,12 @@ export class TcgBoard extends preact.Component<{
 		drag: null as DragState | null,
 		/** Why the play the player just tried is illegal, anchored at the pointer. */
 		refuse: null as { text: string, x: number, y: number } | null,
+		/** Staged Energy indexes for retreat pay (multi-select). */
+		payPicked: [] as number[],
+		/** Browse discard pile: 'me' | 'foe'. */
+		discardBrowse: null as null | 'me' | 'foe',
+		/** Brief board hint when a Pokémon has no actions (mirrors refuse). */
+		slotHint: '' as string,
 	};
 	timer: number | null = null;
 	tableEl: HTMLElement | null = null;
@@ -3237,6 +3252,8 @@ export class TcgBoard extends preact.Component<{
 			if (this.timer != null) window.clearTimeout(this.timer);
 			this.timer = null;
 			this.clearFx();
+			this.payQueue = [];
+			this.paySending = false;
 			if (this.state.prizePicked.length || this.state.prizeGoal || this.state.firstSent) {
 				this.setState({ prizePicked: [], prizeGoal: 0, firstSent: false });
 			}
@@ -3277,6 +3294,7 @@ export class TcgBoard extends preact.Component<{
 		} else if (this.props.snapshot !== prev.snapshot && this.state.fx?.kind !== 'shuffleHand') {
 			this.stashHands(this.props.snapshot);
 		}
+		if (this.props.snapshot !== prev.snapshot) this.flushPayQueue();
 	}
 	override componentWillUnmount() {
 		this.fxPending = [];
@@ -3290,7 +3308,12 @@ export class TcgBoard extends preact.Component<{
 	}
 
 	onKeyDown = (e: KeyboardEvent) => {
-		if (e.key === 'Escape') this.closeInspect();
+		if (e.key !== 'Escape') return;
+		if (this.state.discardBrowse) {
+			this.setState({ discardBrowse: null });
+			return;
+		}
+		this.closeInspect();
 	};
 
 	clearFx() {
@@ -3912,24 +3935,37 @@ export class TcgBoard extends preact.Component<{
 		this.stopRefuseTimer();
 		this.setState({
 			selectedHand: null, energyPick: false, retreatPick: false, drag: null,
-			menuSlot: null, endTurnConfirm: false, attackMay: null, prizePicked, prizeGoal, firstSent, refuse: null,
+			menuSlot: null, endTurnConfirm: false, attackMay: null, prizePicked, prizeGoal, firstSent,
+			refuse: null, payPicked: [], discardBrowse: null, slotHint: '',
 		});
 		this.props.onAct(a);
 	};
 
 	refuseTimer: number | null = null;
+	slotHintTimer: number | null = null;
 	stopRefuseTimer() {
 		if (this.refuseTimer != null) window.clearTimeout(this.refuseTimer);
 		this.refuseTimer = null;
 	}
+	stopSlotHintTimer() {
+		if (this.slotHintTimer != null) window.clearTimeout(this.slotHintTimer);
+		this.slotHintTimer = null;
+	}
 	/** Leave the reason on screen after the pointer comes up. */
-	showRefuse(text: string, x: number, y: number) {
+	showRefuse(text: string, x?: number, y?: number) {
 		if (!text) return;
 		this.stopRefuseTimer();
-		this.setState({ refuse: { text, x, y } });
+		this.stopSlotHintTimer();
+		const cx = x ?? (typeof window !== 'undefined' ? Math.round(window.innerWidth / 2) : 0);
+		const cy = y ?? (typeof window !== 'undefined' ? Math.round(window.innerHeight / 3) : 0);
+		this.setState({ refuse: { text, x: cx, y: cy }, slotHint: text });
 		this.refuseTimer = window.setTimeout(() => {
 			this.refuseTimer = null;
 			this.setState({ refuse: null });
+		}, 2400);
+		this.slotHintTimer = window.setTimeout(() => {
+			this.slotHintTimer = null;
+			this.setState({ slotHint: '' });
 		}, 2400);
 	}
 
@@ -4136,7 +4172,7 @@ export class TcgBoard extends preact.Component<{
 		const acts = this.acts();
 		const snap = this.props.snapshot;
 		const at = (text: string) => {
-			if (text && ev) this.showRefuse(text, ev.clientX, ev.clientY);
+			if (text) this.showRefuse(text, ev?.clientX, ev?.clientY);
 		};
 		const { selectedHand, energyPick, retreatPick, menuSlot } = this.state;
 		if (selectedHand != null) {
@@ -4173,22 +4209,27 @@ export class TcgBoard extends preact.Component<{
 		if (foe) {
 			const hits = acts.filter(a => actionTouchesSlot(a, slot) && (a.foeSlot != null || a.targetSlot != null));
 			if (hits.length === 1) return this.choose(hits[0]);
+			at(hits.length ? 'Choose a specific target for that effect.' : 'That Pokémon is not a valid target.');
 			return;
 		}
 		// Live-style: tap your Pokémon to open its action menu.
 		const menu = this.menuActs(slot);
 		if (menu.length) {
 			this.stopRefuseTimer();
+			this.stopSlotHintTimer();
 			this.setState({
 				menuSlot: menuSlot === slot ? null : slot,
 				selectedHand: null,
 				energyPick: false,
 				refuse: null,
+				slotHint: '',
 			});
 			return;
 		}
 		this.setState({ menuSlot: null });
-		at(whyCant(snap, { slot }, this.props.waiting));
+		const why = whyCant(snap, { slot }, this.props.waiting) || whyMon(snap, slot) ||
+			"This Pokémon has no actions available right now.";
+		at(why);
 	};
 
 	pickMenuAction = (a: TcgAction) => {
@@ -4286,7 +4327,93 @@ export class TcgBoard extends preact.Component<{
 		return false;
 	}
 
-	clearSel = () => this.setState({ selectedHand: null, energyPick: false, retreatPick: false, drag: null, inspect: null, menuSlot: null, endTurnConfirm: false, attackMay: null });
+	clearSel = () => {
+		this.payQueue = [];
+		this.paySending = false;
+		this.setState({
+			selectedHand: null, energyPick: false, retreatPick: false, drag: null, inspect: null,
+			menuSlot: null, endTurnConfirm: false, attackMay: null, payPicked: [], discardBrowse: null, slotHint: '',
+		});
+	};
+
+	/**
+	 * Remaining payEnergy indexes after the first choose was sent.
+	 * Highest-first order keeps lower indexes stable as the server splices energy.
+	 */
+	payQueue: number[] = [];
+	/** True from Confirm/auto-pay until the retreatPay prompt closes. */
+	paySending = false;
+
+	togglePayEnergy = (index: number, need: number, pays: TcgAction[]) => {
+		if (this.payQueue.length || this.paySending) return;
+		this.setState(prev => {
+			const cur = prev.payPicked;
+			const at = cur.indexOf(index);
+			if (at >= 0) return { payPicked: cur.filter(i => i !== index) };
+			if (cur.length >= need) return null;
+			const next = cur.concat(index);
+			// Retreat cost 1: pick is enough — skip the Confirm click.
+			if (need === 1) {
+				queueMicrotask(() => this.confirmPayEnergy(pays, next));
+			}
+			return { payPicked: need === 1 ? [] : next };
+		});
+	};
+
+	confirmPayEnergy = (pays: TcgAction[], pickedOverride?: number[]) => {
+		if (this.payQueue.length || this.paySending) return;
+		const need = this.props.snapshot.pendingRetreatPay?.need ?? 0;
+		const picked = pickedOverride || this.state.payPicked;
+		if (!need || picked.length !== need) return;
+		// Highest index first so earlier splices do not shift later picks.
+		const indexes = picked.slice().sort((a, b) => b - a);
+		const first = pays.find(p => p.index === indexes[0]);
+		if (!first) return;
+		this.paySending = true;
+		this.payQueue = indexes.slice(1);
+		this.stopRefuseTimer();
+		this.stopSlotHintTimer();
+		this.setState({
+			selectedHand: null, energyPick: false, retreatPick: false, drag: null,
+			menuSlot: null, endTurnConfirm: false, attackMay: null,
+			refuse: null, payPicked: [], discardBrowse: null, slotHint: '',
+		});
+		this.props.onAct(first);
+	};
+
+	/** Send the next queued payEnergy once the server offers a fresh retreatPay prompt. */
+	flushPayQueue = () => {
+		const pays = this.acts().filter(a => a.type === 'payEnergy');
+		if (!pays.length) {
+			this.payQueue = [];
+			this.paySending = false;
+			return;
+		}
+		if (!this.payQueue.length) return;
+		const nextIdx = this.payQueue[0];
+		const act = pays.find(p => Number(p.index) === nextIdx);
+		if (!act) {
+			this.payQueue = [];
+			this.paySending = false;
+			return;
+		}
+		this.payQueue = this.payQueue.slice(1);
+		this.props.onAct(act);
+	};
+
+	openDiscardBrowse = (side: 'me' | 'foe', ev?: MouseEvent) => {
+		if (this.state.drag?.active) return;
+		ev?.stopPropagation();
+		const snap = this.props.snapshot;
+		const me = snap.players[snap.you ?? 0];
+		const foe = snap.players[snap.you === 0 ? 1 : 0];
+		const pile = side === 'me' ? me?.discard : foe?.discard;
+		if (!pile?.length) {
+			this.showRefuse('The discard pile is empty.', ev?.clientX, ev?.clientY);
+			return;
+		}
+		this.setState({ discardBrowse: side, menuSlot: null, inspect: null });
+	};
 
 	override render() {
 		const snap = this.props.snapshot;
@@ -4362,6 +4489,14 @@ export class TcgBoard extends preact.Component<{
 		const searches = allActs.filter(a => a.type === 'searchPick' || a.type === 'searchDone');
 		const discards = allActs.filter(a => a.type === 'discardPick');
 		const pays = allActs.filter(a => a.type === 'payEnergy');
+		if (!pays.length && (this.state.payPicked.length || this.payQueue.length || this.paySending)) {
+			// Prompt closed; drop staged picks without fighting the current render.
+			queueMicrotask(() => {
+				this.payQueue = [];
+				this.paySending = false;
+				if (this.state.payPicked.length) this.setState({ payPicked: [] });
+			});
+		}
 		const prizeActs = allActs.filter(a => a.type === 'takePrize');
 		const picked = this.state.prizePicked;
 		const prizeGoal = this.state.prizeGoal || view.pendingPrize?.n || 0;
@@ -4414,7 +4549,9 @@ export class TcgBoard extends preact.Component<{
 				view.pendingSearch ? 'Choose a card from the search' : '',
 				view.pendingDiscard ?
 					`Drag ${view.pendingDiscard.need} card${view.pendingDiscard.need === 1 ? '' : 's'} to Discard` : '',
-				view.pendingRetreatPay ? `Discard ${view.pendingRetreatPay.need} Energy to retreat` : '',
+				view.pendingRetreatPay ?
+					`Select ${view.pendingRetreatPay.need} Energy to discard for retreat` : '',
+				this.state.slotHint || '',
 				view.pendingPromote != null && view.pendingPromote === snap.you ?
 					'Choose a Benched Pokémon to promote' : '',
 				prizes.length && view.pendingPrize ?
@@ -4569,7 +4706,12 @@ export class TcgBoard extends preact.Component<{
 							<strong class="tcg-pile-count">{pileCount(foe.deck)}</strong>
 							<em class="tcg-pile-label">Deck</em>
 						</div>
-						<div class="tcg-pile discard foe" title="Opponent discard">
+						<div
+							class="tcg-pile discard foe"
+							title="Opponent discard — click to view"
+							role="button"
+							onClick={(ev: MouseEvent) => this.openDiscardBrowse('foe', ev)}
+						>
 							<div class="tcg-pile-stack">
 								<span></span><span></span>
 								{foe.discard?.length ?
@@ -4677,8 +4819,13 @@ export class TcgBoard extends preact.Component<{
 						</div>
 						<div
 							class={`tcg-pile discard me${discardDropHits.length ? ' drop-ok' : ''}${discardHot ? ' drop-hot' : ''}`}
-							title="Discard"
+							title="Discard — click to view"
 							data-drop="discard"
+							role="button"
+							onClick={(ev: MouseEvent) => {
+								if (discardDropHits.length && this.state.selectedHand != null) return;
+								this.openDiscardBrowse('me', ev);
+							}}
 						>
 							<div class="tcg-pile-stack">
 								<span></span><span></span>
@@ -4917,17 +5064,46 @@ export class TcgBoard extends preact.Component<{
 						</div>}
 
 						{kind === 'pay' && <div class="tcg-prompt-select">
-							<p class="tcg-prompt-note">Select Energy attached to your Active Pokémon</p>
+							<p class="tcg-prompt-note">
+								{this.payQueue.length || this.paySending ?
+									'Discarding Energy…' :
+									`Select ${snap.pendingRetreatPay?.need ?? 1} Energy attached to your Active Pokémon`}
+								{!(this.payQueue.length || this.paySending) && !!this.state.payPicked.length &&
+									` · Selected ${this.state.payPicked.length} / ${snap.pendingRetreatPay?.need ?? 1}`}
+							</p>
 							<div class="tcg-prompt-energy">
 								{pays.map((a, i) => {
-									const t = me.active?.energy?.[a.index] || 'colorless';
+									const idx = Number(a.index);
+									const t = me.active?.energy?.[idx] || 'colorless';
+									const cardId = me.active?.energyCards?.[idx] || '';
+									const picked = this.state.payPicked.indexOf(idx) >= 0;
+									const need = snap.pendingRetreatPay?.need ?? 1;
+									const busy = !!(this.payQueue.length || this.paySending);
+									const full = !picked && this.state.payPicked.length >= need;
 									return <button
-										type="button" key={i} class="tcg-prompt-orb"
+										type="button" key={i}
+										class={`tcg-prompt-orb${picked ? ' is-picked' : ''}${full || busy ? ' is-dim' : ''}`}
 										style={{ background: TYPE_COLOR[t] || '#888' }}
-										title={t}
-										onClick={() => this.choose(a)}
-									></button>;
+										title={cardId ? `${cardLabel(cardId)} (${t})` : t}
+										disabled={full || busy}
+										onClick={() => this.togglePayEnergy(idx, need, pays)}
+									>
+										<span class="tcg-prompt-orb-label">{cardId ? cardLabel(cardId) : t}</span>
+									</button>;
 								})}
+							</div>
+							<div class="tcg-prompt-acts">
+								<button
+									type="button" class="tcg-btn quiet"
+									disabled={!!(this.payQueue.length || this.paySending)}
+									onClick={() => this.setState({ payPicked: [] })}
+								>Clear</button>
+								<button
+									type="button" class="tcg-btn primary"
+									disabled={!!(this.payQueue.length || this.paySending) ||
+										this.state.payPicked.length !== (snap.pendingRetreatPay?.need ?? 0)}
+									onClick={() => this.confirmPayEnergy(pays)}
+								>Confirm</button>
 							</div>
 						</div>}
 
@@ -5001,6 +5177,38 @@ export class TcgBoard extends preact.Component<{
 						<CardBackFace />)}
 				{drag.hint && <em>{drag.hint}</em>}
 			</div>}
+			{this.state.discardBrowse && (() => {
+				const side = this.state.discardBrowse;
+				const pile = (side === 'me' ? me.discard : foe.discard) || [];
+				const title = side === 'me' ? 'Your discard pile' : 'Opponent discard pile';
+				return <div class="tcg-prompt kind-discard-browse">
+					<div class="tcg-prompt-veil" onClick={() => this.setState({ discardBrowse: null })}></div>
+					<div class="tcg-prompt-panel">
+						<div class="tcg-prompt-banner">
+							<strong>{title}</strong>
+							<span>{pile.length} card{pile.length === 1 ? '' : 's'}</span>
+							<button
+								type="button" class="tcg-cancel"
+								onClick={() => this.setState({ discardBrowse: null })}
+							>✕</button>
+						</div>
+						<div class="tcg-prompt-select">
+							<div class="tcg-prompt-rail">
+								{pile.length ? [...pile].reverse().map((id, i) =>
+									<div key={`${id}-${i}`} class="tcg-prompt-card">
+										<TcgCardFace cardId={id} size="md" onInspect={this.openInspect} />
+										<em>{cardLabel(id)}</em>
+									</div>
+								) : <p class="tcg-prompt-note">Empty</p>}
+							</div>
+							<button
+								type="button" class="tcg-btn quiet"
+								onClick={() => this.setState({ discardBrowse: null })}
+							>Close</button>
+						</div>
+					</div>
+				</div>;
+			})()}
 			{this.state.refuse && <div
 				class="tcg-refuse"
 				style={{ left: `${this.state.refuse.x}px`, top: `${this.state.refuse.y}px` }}
