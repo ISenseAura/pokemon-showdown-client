@@ -2033,6 +2033,8 @@ class FxOverlay extends preact.Component<{
 				{cap('ATTACK', fx.extra || 'Attack')}
 				<div class="fx-slash"></div><div class="fx-slash s2"></div>
 				<div class="fx-impact"></div>
+				<div class="fx-burst"></div>
+				<div class="fx-burst d2"></div>
 			</>, 'attack');
 		}
 		if (k === 'ability') {
@@ -2057,6 +2059,9 @@ class FxOverlay extends preact.Component<{
 		if (k === 'ko') {
 			return wrap('ko', <>
 				{cap('KNOCKED OUT', fx.extra || undefined)}
+				<div class="fx-burst"></div>
+				<div class="fx-burst d2"></div>
+				<div class="fx-ring"></div>
 			</>);
 		}
 		if (k === 'heal') {
@@ -2064,8 +2069,9 @@ class FxOverlay extends preact.Component<{
 			return wrap('heal', <div class="fx-heal-aura"></div>);
 		}
 		if (k === 'damage') {
-			// Amount shows on the Pokémon (`data-fx`); skip the big mid-board number.
-			return wrap('damage', <></>, fx.src || 'effect');
+			return wrap('damage', <>
+				<div class="fx-burst"></div>
+			</>, fx.src || 'effect');
 		}
 		return null;
 	}
@@ -4606,6 +4612,12 @@ export class TcgBoard extends preact.Component<{
 			onContextMenu={ev => ev.preventDefault()}
 		>
 			<div class="tcg-felt"></div>
+			{st.fx && (st.fx.kind === 'attack' || st.fx.kind === 'damage' || st.fx.kind === 'ko') ?
+				<div
+					class={`tcg-fx-veil k-${st.fx.kind}`}
+					key={`veil-${st.fx.kind}-${st.fx.iid || ''}-${st.fx.amount || ''}`}
+					aria-hidden="true"
+				/> : null}
 			{waitingOpp && !(st.fx && (st.fx.kind === 'turn' || st.fx.kind === 'search' || st.fx.kind === 'mulligan')) &&
 				<div class="tcg-wait-banner" aria-live="polite">
 					<em>Waiting</em>
