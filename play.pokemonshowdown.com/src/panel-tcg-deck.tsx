@@ -399,6 +399,7 @@ export class TcgDeckEditor extends preact.Component<{
 								<span class="tcg-deck-card-meta">
 									<strong>{c.n}</strong>
 									<small>{c.set}{c.r ? ` · ${c.r}` : ''}</small>
+									<code class="tcg-deck-card-id">{c.id}</code>
 								</span>
 								<div class="tcg-deck-card-qty">
 									<button
@@ -514,6 +515,7 @@ export class TcgDeckEditor extends preact.Component<{
 						<button type="button" class="tcg-deck-qty" onClick={() => this.setQty(line.id, line.n + 1)}>+</button>
 						<button type="button" class="tcg-deck-line-name" onClick={() => this.openPreview(line.card || null)}>
 							{line.card?.n || line.id}
+							<code class="tcg-deck-card-id">{line.id}</code>
 						</button>
 					</li>
 				)}
