@@ -1617,6 +1617,15 @@ span.tcg-card-backface {
 }
 .tcg-atk.on { border-color: #ffe566; box-shadow: 0 0 0 2px #ffe566; }
 .tcg-atk-name { letter-spacing: 0.02em; }
+.tcg-atk-sub {
+	display: block;
+	width: 100%;
+	font-size: 8pt;
+	font-weight: 600;
+	opacity: 0.7;
+	text-transform: none;
+	letter-spacing: 0;
+}
 .tcg-atk-dmg { color: #ff6b5a; font-size: 14px; font-weight: 800; }
 .tcg-atk-cost { display: inline-flex; gap: 3px; }
 .tcg-atk-kind {
@@ -1838,16 +1847,46 @@ span.tcg-card-backface {
 	padding: 8px 0 4px;
 }
 .tcg-prompt-orb {
-	width: 44px;
-	height: 44px;
+	position: relative;
+	width: 56px;
+	height: 56px;
 	border-radius: 50%;
 	border: 3px solid rgba(255, 255, 255, 0.7);
 	box-shadow: 0 0 14px rgba(255, 255, 255, 0.25), 0 6px 14px rgba(0, 0, 0, 0.4);
 	cursor: pointer;
+	padding: 0;
+	color: #fff;
+	text-shadow: 0 1px 2px #000;
 }
 .tcg-prompt-orb:hover {
 	transform: scale(1.1);
 	box-shadow: 0 0 0 3px #ffe566, 0 0 18px rgba(255, 220, 90, 0.55);
+}
+.tcg-prompt-orb.is-picked {
+	box-shadow: 0 0 0 3px #ffe566, 0 0 18px rgba(255, 220, 90, 0.7);
+	border-color: #ffe566;
+}
+.tcg-prompt-orb.is-dim {
+	opacity: 0.4;
+	cursor: default;
+}
+.tcg-prompt-orb-label {
+	display: block;
+	max-width: 52px;
+	margin: 0 auto;
+	font-size: 7.5pt;
+	font-weight: 800;
+	line-height: 1.1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	text-transform: capitalize;
+}
+.tcg-pile.discard {
+	cursor: pointer;
+}
+.tcg-prompt-banner .tcg-cancel {
+	margin-left: auto;
 }
 
 .tcg-modal {
