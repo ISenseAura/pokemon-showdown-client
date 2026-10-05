@@ -1027,9 +1027,9 @@ function fxDuration(e: TcgEvent): number {
 	if (t === 'turn') return 900;
 	if (t === 'first') return 3200;
 	if (t === 'coin') return 2700;
-	if (t === 'attack' || t === 'ability') return 3000;
-	if (t === 'damage' || t === 'heal') return 2600;
-	if (t === 'ko') return 2800;
+	if (t === 'attack' || t === 'ability') return 3100;
+	if (t === 'damage' || t === 'heal') return 2750;
+	if (t === 'ko') return 3000;
 	if (t === 'over') return 4200;
 	if (t === 'prize' || t === 'prizeTake') return 1200;
 	if (t === 'points') return 2400;
@@ -1042,8 +1042,8 @@ function fxDuration(e: TcgEvent): number {
 	if (t === 'trainer' || t === 'stadium') return 3200;
 	if (t === 'stadiumEnd') return 2400;
 	if (t === 'energy' || t === 'tool') return 2400;
-	if (t === 'place') return 2200;
-	if (t === 'evolve') return 2800;
+	if (t === 'place') return 2300;
+	if (t === 'evolve') return 2900;
 	if (t === 'discard') return 2000;
 	return 2000;
 }
