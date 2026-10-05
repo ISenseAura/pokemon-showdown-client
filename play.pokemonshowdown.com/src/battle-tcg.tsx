@@ -2481,7 +2481,7 @@ function whyBadDrop(snap: TcgSnapshot, ctx: WhyCtx): string {
 function whyMon(snap: TcgSnapshot, slot: TcgSlot): string {
 	const me = snap.you != null ? snap.players[snap.you] : undefined;
 	const mon = slot === 'active' ? me?.active : me?.bench?.[Number(slot)];
-	if (!mon) return '';
+	if (!mon) return 'There is no Pokémon there.';
 	if (snap.status === 'setup') return 'Finish setting up your Pokémon first.';
 	if (slot !== 'active') {
 		if (snap.pendingPromote != null && snap.pendingPromote === snap.you) {
@@ -2490,12 +2490,22 @@ function whyMon(snap: TcgSnapshot, slot: TcgSlot): string {
 		return "This Pokémon can't use an Ability right now.";
 	}
 	const st = String(mon.status || '').toLowerCase();
-	if (st === 'asleep' || st === 'paralyzed') {
-		return `This Pokémon is ${statusWord(st)} and can't attack or retreat.`;
-	}
+	if (st === 'asleep') return 'This Pokémon is Asleep and can\'t attack or retreat.';
+	if (st === 'paralyzed') return 'This Pokémon is Paralyzed and can\'t attack or retreat.';
 	if (firstPlayerTurn(snap)) return "You can't attack on your first turn.";
-	if (me?.retreatedThisTurn) return "You already retreated, and this Pokémon can't attack right now.";
-	if (!(mon.energy || []).length) return "This Pokémon doesn't have enough Energy to attack.";
+	if (me?.retreatedThisTurn) return "You already retreated this turn, so this Pokémon can't attack.";
+	const energy = mon.energy || [];
+	if (!energy.length) return "This Pokémon doesn't have enough Energy to attack.";
+	const acts = (snap.actions || []).filter(a =>
+		a.type === 'attack' || a.type === 'retreat' ||
+		(a.type === 'ability' && (a.slot == null || a.slot === 'active' || sameSlot(a.slot, 'active')))
+	);
+	if (!acts.length) {
+		if (me?.attachedEnergyThisTurn && !(mon.attacks || []).length) {
+			return "This Pokémon can't attack or retreat right now.";
+		}
+		return "This Pokémon has no actions available right now.";
+	}
 	return "This Pokémon can't attack or retreat right now.";
 }
 
@@ -2563,16 +2573,48 @@ function optionalAttackPair(acts: TcgAction[], index: number): { yes: TcgAction,
 	return { yes, no };
 }
 
-export function describeAction(a: TcgAction, snap: TcgSnapshot): string {
+export function describeAction(a: TcgAction, snap: TcgSnapshot, opts?: { targetOnly?: boolean }): string {
 	const me = snap.players[snap.you ?? 0];
+	const foe = snap.players[snap.you === 0 ? 1 : 0];
 	const handId = (i?: number) => (Array.isArray(me?.hand) && i != null ? me.hand[i] : '') || '';
 	const cardAt = (i?: number) => cardLabel(handId(i));
 	const slotName = (s?: TcgSlot) => s === 'active' ? 'Active' : s == null ? '' : `Bench ${Number(s) + 1}`;
-	const monAt = (s?: TcgSlot) => {
-		if (!me || s == null) return '';
-		if (s === 'active') return me.active?.name || 'Active';
-		return me.bench?.[Number(s)]?.name || slotName(s);
+	const monAt = (s?: TcgSlot, side?: TcgPlayerView | undefined) => {
+		const p = side || me;
+		if (!p || s == null) return '';
+		if (s === 'active') return p.active?.name || 'Active';
+		return p.bench?.[Number(s)]?.name || slotName(s);
 	};
+	const targetIsFoe = a.foeSlot != null;
+	// Prefer explicit foe fields; otherwise resolve against both sides.
+	const targetLabel = (() => {
+		if (a.foeSlot != null) return monAt(a.foeSlot, foe) || `Foe ${slotName(a.foeSlot)}`;
+		if (a.targetSlot != null) {
+			const mine = monAt(a.targetSlot, me);
+			const theirs = monAt(a.targetSlot, foe);
+			if (mine && !theirs) return mine;
+			if (theirs && !mine) return theirs;
+			if (targetIsFoe) return theirs || mine || slotName(a.targetSlot);
+			return mine || theirs || slotName(a.targetSlot);
+		}
+		if (a.bench != null && (a.type === 'retreat' || a.type === 'promote' || a.type === 'ability' || a.type === 'attack')) {
+			return monAt(a.bench, me) || slotName(a.bench);
+		}
+		if (a.slot != null && a.type !== 'attack' && a.type !== 'ability') return monAt(a.slot, me) || slotName(a.slot);
+		return '';
+	})();
+	const moveName = (() => {
+		if (a.type === 'ability') {
+			if (a.name) return a.name;
+			const mon = a.slot === 'active' ? me?.active : me?.bench?.[Number(a.slot)];
+			return mon?.abilities?.[a.index]?.name || 'Ability';
+		}
+		if (a.type === 'attack') {
+			if (a.name) return a.name;
+			return me?.active?.attacks?.[a.index]?.name || `Attack ${(a.index ?? 0) + 1}`;
+		}
+		return '';
+	})();
 	switch (a.type) {
 	case 'setupDone': return 'Ready';
 	case 'endTurn': return 'End Turn';
@@ -2582,21 +2624,20 @@ export function describeAction(a: TcgAction, snap: TcgSnapshot): string {
 	case 'evolve': return `Evolve ${monAt(a.slot)} → ${cardAt(a.hand)}`;
 	case 'attachEnergy': return `Attach ${cardAt(a.hand)} to ${monAt(a.slot)}`;
 	case 'attachTool': return `Tool ${cardAt(a.hand)} → ${monAt(a.slot)}`;
-	case 'playTrainer': return `Play ${cardAt(a.hand)}`;
+	case 'playTrainer': return targetLabel ? `Play ${cardAt(a.hand)} → ${targetLabel}` : `Play ${cardAt(a.hand)}`;
 	case 'playStadium': return `Stadium ${cardAt(a.hand)}`;
 	case 'useStadium': return 'Use Stadium';
 	case 'ability': {
-		if (a.name) return a.name;
-		const mon = a.slot === 'active' ? me?.active : me?.bench?.[Number(a.slot)];
-		const ab = mon?.abilities?.[a.index];
-		return ab?.name || `Ability ${slotName(a.slot)}`;
+		if (opts?.targetOnly && targetLabel) return targetLabel;
+		if (targetLabel) return `${moveName} → ${targetLabel}`;
+		return moveName;
 	}
 	case 'retreat': return `Retreat → ${monAt(a.bench)}`;
 	case 'payEnergy': return 'Discard Energy';
 	case 'attack': {
-		if (a.name) return a.name;
-		const atk = me?.active?.attacks?.[a.index];
-		return atk?.name || `Attack ${(a.index ?? 0) + 1}`;
+		if (opts?.targetOnly && targetLabel) return targetLabel;
+		if (targetLabel) return `${moveName} → ${targetLabel}`;
+		return moveName;
 	}
 	case 'searchPick': return `Take ${cardLabel(a.pick)}`;
 	case 'searchDone': return 'Done searching';
@@ -2609,10 +2650,38 @@ export function describeAction(a: TcgAction, snap: TcgSnapshot): string {
 	case 'mulliganDone': return 'Keep hand';
 	case 'takePrize': return `Take Prize ${Number(a.index) + 1}`;
 	case 'attachZone': return `Attach Energy → ${monAt(a.slot)}`;
-	case 'pickSlot': return `Choose ${monAt(a.slot) || slotName(a.slot)}`;
+	case 'pickSlot': {
+		const pickSide = a.foeSlot != null ? foe : me;
+		const pick = a.foeSlot != null ? a.foeSlot : a.slot;
+		return `Choose ${monAt(pick, pickSide) || slotName(pick)}`;
+	}
 	case 'playVunion': return `Play ${a.name || 'V-UNION'}`;
 	default: return a.type;
 	}
+}
+
+/** True when several actions share a move/ability identity but differ by board target. */
+function actionTargetKey(a: TcgAction): string {
+	if (a.foeSlot != null) return `f:${a.foeSlot}`;
+	if (a.targetSlot != null) return `t:${a.targetSlot}`;
+	if (a.bench != null) return `b:${a.bench}`;
+	if (a.slot != null) return `s:${a.slot}`;
+	return '';
+}
+function actionIdentityKey(a: TcgAction): string {
+	if (a.type === 'attack') return `attack:${a.index != null ? a.index : (a.name || '')}`;
+	if (a.type === 'ability') return `ability:${a.index != null ? a.index : (a.name || '')}:${a.slot ?? ''}`;
+	return `${a.type}:${a.name || a.index || ''}`;
+}
+function isMultiTargetGroup(acts: TcgAction[], a: TcgAction): boolean {
+	const id = actionIdentityKey(a);
+	const keys = new Set<string>();
+	for (const x of acts) {
+		if (actionIdentityKey(x) !== id) continue;
+		const k = actionTargetKey(x);
+		if (k) keys.add(k);
+	}
+	return keys.size > 1;
 }
 
 class TcgCardFace extends preact.Component<{
@@ -4695,7 +4764,7 @@ export class TcgBoard extends preact.Component<{
 					<button type="button" class="tcg-cancel" onClick={this.clearSel}>Cancel</button>}
 				{orphanActs.map((a, i) =>
 					<button type="button" key={`o${i}`} class="tcg-atk quiet" onClick={() => this.choose(a)}>
-						{describeAction(a, snap)}
+						{describeAction(a, snap, { targetOnly: isMultiTargetGroup(orphanActs, a) })}
 					</button>
 				)}
 				{startBattle && <button type="button" class="tcg-start" onClick={() => this.choose(startBattle)}>
@@ -4730,22 +4799,30 @@ export class TcgBoard extends preact.Component<{
 						<div class="tcg-action-list">
 							{menu.filter((a, i) => {
 								if (a.type !== 'attack' || !optionalAttackPair(menu, a.index)) return true;
+								// Keep distinct targets for the same attack index.
+								if (isMultiTargetGroup(menu, a)) return true;
 								return menu.findIndex(x => x.type === 'attack' && x.index === a.index) === i;
 							}).map((a, i) => {
+								const multi = isMultiTargetGroup(menu, a);
 								if (a.type === 'attack') {
 									const atk = a.name || a.cost || a.damage ?
 										{ name: a.name, cost: a.cost, damage: a.damage } :
 										me.active?.attacks?.[a.index];
+									const label = describeAction(a, snap, { targetOnly: multi });
 									return <button type="button" key={i} class="tcg-atk" onClick={() => this.pickMenuAction(a)}>
-										<span class="tcg-atk-cost">{(atk?.cost || []).map((t, j) => pip(t, j))}</span>
-										<span class="tcg-atk-name">{atk?.name || `Attack ${(a.index ?? 0) + 1}`}</span>
-										{atk?.damage && <span class="tcg-atk-dmg">{atk.damage}</span>}
+										{!multi && <span class="tcg-atk-cost">{(atk?.cost || []).map((t, j) => pip(t, j))}</span>}
+										<span class="tcg-atk-name">{label}</span>
+										{multi && (atk?.name || a.name) &&
+											<span class="tcg-atk-sub">{atk?.name || a.name}</span>}
+										{!multi && atk?.damage && <span class="tcg-atk-dmg">{atk.damage}</span>}
 									</button>;
 								}
 								if (a.type === 'ability') {
+									const label = describeAction(a, snap, { targetOnly: multi });
 									return <button type="button" key={i} class="tcg-atk ability" onClick={() => this.pickMenuAction(a)}>
-										<span class="tcg-atk-kind">Ability</span>
-										<span class="tcg-atk-name">{describeAction(a, snap)}</span>
+										<span class="tcg-atk-kind">{multi ? 'Target' : 'Ability'}</span>
+										<span class="tcg-atk-name">{label}</span>
+										{multi && a.name && <span class="tcg-atk-sub">{a.name}</span>}
 									</button>;
 								}
 								if (a.type === 'retreat') {
@@ -4754,7 +4831,7 @@ export class TcgBoard extends preact.Component<{
 									</button>;
 								}
 								return <button type="button" key={i} class="tcg-atk quiet" onClick={() => this.pickMenuAction(a)}>
-									{describeAction(a, snap)}
+									{describeAction(a, snap, { targetOnly: multi })}
 								</button>;
 							})}
 						</div>
