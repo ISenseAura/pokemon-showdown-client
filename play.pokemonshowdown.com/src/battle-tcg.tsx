@@ -7,8 +7,6 @@
 import preact from "../js/lib/preact";
 import { PS } from "./client-main";
 import { Net } from "./client-connection";
-import { getTcgCard, loadTcgCardIndex } from "./battle-tcg-deck";
-
 export function isTcgBattleId(id: string): boolean {
 	const format = id.split('-')[1] || '';
 	return format.startsWith('tcg');
@@ -159,6 +157,49 @@ export function normalizeTcgEnergy(snap: TcgSnapshot | null | undefined) {
 
 function handAsIds(hand: TcgPlayerView['hand']): string[] | null {
 	return Array.isArray(hand) ? hand.slice() : null;
+}
+
+/** Same rules as Wave-TCG `viewEvents` — spectators never get hidden card ids in events. */
+export function filterTcgEventsForViewer(
+	events: TcgEvent[] | undefined,
+	you: 0 | 1 | null
+): TcgEvent[] | undefined {
+	if (you != null || !events?.length) return events;
+	return events.map(e => {
+		if (e.type === 'draw' || e.type === 'find' || e.type === 'prizeTake' || e.type === 'fromHand') {
+			const { ids: _ids, ...rest } = e;
+			return rest as TcgEvent;
+		}
+		if (e.type === 'deal') {
+			const out = { ...e };
+			delete (out as { ids0?: string[] }).ids0;
+			delete (out as { ids1?: string[] }).ids1;
+			return out as TcgEvent;
+		}
+		if (e.type === 'shuffle') {
+			const { ids: _ids, ...rest } = e as TcgEvent & { ids?: string[] };
+			return rest as TcgEvent;
+		}
+		return e;
+	});
+}
+
+/** Defense in depth when `you` is null (spectator / public watch snapshot). */
+export function scrubTcgSpectatorView(snap: TcgSnapshot): TcgSnapshot {
+	if (snap.you != null) return snap;
+	const out = cloneTcgSnapshot(snap);
+	out.actions = [];
+	delete out.pendingSearch;
+	delete out.pendingDiscard;
+	delete out.pendingRetreatPay;
+	delete out.pendingConfirm;
+	delete out.pendingSlotPick;
+	delete out.pendingCopyAttack;
+	for (const p of out.players) {
+		if (!p) continue;
+		if (Array.isArray(p.hand)) p.hand = { count: p.hand.length };
+	}
+	return out;
 }
 
 /**
@@ -355,10 +396,12 @@ export function applyTcgEvents(
 	events: TcgEvent[] | undefined,
 	actions?: TcgAction[]
 ): TcgSnapshot {
-	const snap = cloneTcgSnapshot(base);
-	const list = events || [];
+	let snap = cloneTcgSnapshot(base);
+	if (snap.you == null) snap = scrubTcgSpectatorView(snap);
+	const list = filterTcgEventsForViewer(events, snap.you) || [];
 	for (let i = 0; i < list.length; i++) applyBatchEvent(snap, list, i);
-	if (actions) snap.actions = actions;
+	if (actions !== undefined) snap.actions = actions;
+	else if (snap.you == null) snap.actions = [];
 	normalizeTcgEnergy(snap);
 	return snap;
 }
@@ -437,12 +480,18 @@ export function applyTcgEvent(snap: TcgSnapshot, e: TcgEvent) {
 		const p = players[seat];
 		if (p) {
 			const ids = e.ids as string[] | undefined;
-			if (ids?.length) {
-				const hand = handAsIds(p.hand) || [];
-				setHand(p, hand.concat(ids));
-			} else if (!Array.isArray(p.hand) && p.hand) {
-				const n = e.type === 'draw' ? (Number(e.n) || 0) : Math.max(1, ids?.length || Number(e.n) || 1);
-				if (n) p.hand = bumpPile(p.hand as { count: number }, n);
+			// `find` with dest other than hand (e.g. Nighttime Maneuvers → top of deck)
+			// must not enter the hand — that desyncs hand indices vs the server.
+			const findDest = e.type === 'find' ? String(e.dest || 'hand') : 'hand';
+			const toHand = e.type === 'draw' || findDest === 'hand';
+			if (toHand) {
+				if (ids?.length) {
+					const hand = handAsIds(p.hand) || [];
+					setHand(p, hand.concat(ids));
+				} else if (!Array.isArray(p.hand) && p.hand) {
+					const n = e.type === 'draw' ? (Number(e.n) || 0) : Math.max(1, ids?.length || Number(e.n) || 1);
+					if (n) p.hand = bumpPile(p.hand as { count: number }, n);
+				}
 			}
 			if (e.type === 'draw' && e.n) p.deck = bumpPile(p.deck, -(Number(e.n) || 0));
 		}
@@ -695,7 +744,10 @@ type FxBeat = {
 	slot?: TcgSlot,
 	fromBench?: boolean,
 };
-type PkFx = { cls: string, dataFx?: string, tick?: number, element?: string, status?: string };
+type PkFx = {
+	cls: string, dataFx?: string, tick?: number, element?: string, status?: string,
+	moveTag?: string, moveName?: string,
+};
 type KoGhost = {
 	iid: string,
 	cardId: string,
@@ -1317,13 +1369,21 @@ export function chatEntryForEvent(ev: TcgEvent, players?: TcgPlayerView[], snap?
 	case 'find': {
 		const ids = Array.isArray(ev.ids) ? ev.ids.filter(Boolean) : [];
 		const why = fromSource(ev);
-		const text = ids.length === 1 ?
-			`${w(ev.seat)} put ${nm(ids[0])} into their hand${why}.` :
-			ids.length > 1 ?
-				`${w(ev.seat)} put ${ids.map(nm).join(', ')} into their hand${why}.` :
-				((ev.ids?.length) || ev.n || 1) === 1 ?
-					`${w(ev.seat)} put a card into their hand${why}.` :
-					`${w(ev.seat)} put ${(ev.ids?.length) || ev.n} cards into their hand${why}.`;
+		const dest = String(ev.dest || 'hand');
+		const named = ids.length ? ids.map(nm).join(', ') : '';
+		const where =
+			dest === 'top' ? 'on top of their deck' :
+			dest === 'bench' ? 'onto their Bench' :
+			dest === 'deck' ? 'into their deck' :
+			dest === 'discard' ? 'into their discard pile' :
+			dest === 'lost' ? 'into the Lost Zone' :
+			dest === 'attach-active' ? 'onto their Active Pokémon' :
+			'into their hand';
+		const text = named ?
+			`${w(ev.seat)} put ${named} ${where}${why}.` :
+			((ev.ids?.length) || ev.n || 1) === 1 ?
+				`${w(ev.seat)} put a card ${where}${why}.` :
+				`${w(ev.seat)} put ${(ev.ids?.length) || ev.n} cards ${where}${why}.`;
 		return { kind: 'draw', label: 'Search', text, seat: ev.seat };
 	}
 	case 'prize':
@@ -1431,13 +1491,22 @@ function fxFor(
 		const ids = Array.isArray(e.ids) ? e.ids.filter(Boolean) as string[] : [];
 		const names = ids.map(cardLabel);
 		const found = names.length ? names.join(', ') : `${ids.length || 1} card(s)`;
+		const dest = String(e.dest || 'hand');
+		const where =
+			dest === 'top' ? 'on top of the deck' :
+			dest === 'bench' ? 'onto the Bench' :
+			dest === 'deck' ? 'into the deck' :
+			dest === 'discard' ? 'into the discard pile' :
+			dest === 'lost' ? 'into the Lost Zone' :
+			dest === 'attach-active' ? 'onto the Active Pokémon' :
+			'into the hand';
 		return {
 			kind: 'find', seat: e.seat, n: ids.length || 1,
-			extra: names.length ? names.join(', ') : 'Put into the hand',
+			extra: names.length ? names.join(', ') : `Put ${where}`,
 			cardId: ids[0] || '', ids, labels: names,
 			message: yours(e.seat) ?
-				`You put ${found} into your hand` :
-				`${who(e.seat)} put ${found} into their hand`,
+				`You put ${found} ${where}` :
+				`${who(e.seat)} put ${found} ${where}`,
 		};
 	}
 	if (e.type === 'act' && e.action?.type === 'discardPick') {
@@ -1728,10 +1797,14 @@ function pkClass(fx: FxBeat): string {
 function buildPkFx(fx: FxBeat, tick = 0): { [iid: string]: PkFx } {
 	const out: { [iid: string]: PkFx } = {};
 	const put = (
-		iid: string | undefined, cls: string, dataFx?: string, element?: string, status?: string
+		iid: string | undefined, cls: string, dataFx?: string, element?: string, status?: string,
+		move?: { tag: string, name: string },
 	) => {
 		if (!iid) return;
-		out[iid] = { cls, dataFx, tick, element, status };
+		out[iid] = {
+			cls, dataFx, tick, element, status,
+			moveTag: move?.tag, moveName: move?.name,
+		};
 	};
 	if (fx.kind === 'status' && fx.iid) {
 		put(fx.iid, `fx-status ${statusFxClass(fx.status)}`, undefined, undefined, fx.status ?? '');
@@ -1742,7 +1815,11 @@ function buildPkFx(fx: FxBeat, tick = 0): { [iid: string]: PkFx } {
 		if (fx.kind === 'energy') dataFx = '⚡';
 		if (fx.kind === 'evolve') dataFx = '✨';
 		if (fx.kind === 'ko') dataFx = 'KO';
-		put(fx.iid, `${pkClass(fx)}${fx.src ? ` src-${fx.src}` : ''}`, dataFx || undefined);
+		const move = (fx.kind === 'attack' || fx.kind === 'ability') ? {
+			tag: fx.kind === 'attack' ? 'Attack' : 'Ability',
+			name: fx.extra || (fx.kind === 'attack' ? 'Attack' : 'Ability'),
+		} : undefined;
+		put(fx.iid, `${pkClass(fx)}${fx.src ? ` src-${fx.src}` : ''}`, dataFx || undefined, undefined, undefined, move);
 	}
 	if (fx.targetIid && fx.targetIid !== fx.iid) put(fx.targetIid, 'fx-hit');
 	for (const h of fx.hits || []) {
@@ -2028,20 +2105,9 @@ class FxOverlay extends preact.Component<{
 				</div>
 			</>);
 		}
-		if (k === 'attack') {
-			return wrap('attack', <>
-				{cap('ATTACK', fx.extra || 'Attack')}
-				<div class="fx-slash"></div><div class="fx-slash s2"></div>
-				<div class="fx-impact"></div>
-				<div class="fx-burst"></div>
-				<div class="fx-burst d2"></div>
-			</>, 'attack');
-		}
-		if (k === 'ability') {
-			return wrap('ability', <>
-				{cap('ABILITY', fx.extra || 'Ability')}
-				<div class="fx-ring"></div>
-			</>, 'ability');
+		if (k === 'attack' || k === 'ability') {
+			// Move name banner renders on the attacking Pokémon (TcgMon).
+			return null;
 		}
 		if (k === 'turn') {
 			// The header badge already says whose turn this is.
@@ -2506,7 +2572,6 @@ function whyMon(snap: TcgSnapshot, slot: TcgSlot): string {
 	if (st === 'asleep') return 'This Pokémon is Asleep and can\'t attack or retreat.';
 	if (st === 'paralyzed') return 'This Pokémon is Paralyzed and can\'t attack or retreat.';
 	if (firstPlayerTurn(snap)) return "You can't attack on your first turn.";
-	if (me?.retreatedThisTurn) return "You already retreated this turn, so this Pokémon can't attack.";
 	const energy = mon.energy || [];
 	if (!energy.length) return "This Pokémon doesn't have enough Energy to attack.";
 	const acts = (snap.actions || []).filter(a =>
@@ -2514,6 +2579,8 @@ function whyMon(snap: TcgSnapshot, slot: TcgSlot): string {
 		(a.type === 'ability' && (a.slot == null || a.slot === 'active' || sameSlot(a.slot, 'active')))
 	);
 	if (!acts.length) {
+		// Official rules: you may still attack after retreating (once per turn).
+		// `retreatedThisTurn` only blocks a second retreat — never the attack itself.
 		if (me?.attachedEnergyThisTurn && !(mon.attacks || []).length) {
 			return "This Pokémon can't attack or retreat right now.";
 		}
@@ -3011,6 +3078,14 @@ class TcgMon extends preact.Component<{
 			{statusBadges(mon).length > 0 &&
 				<div class="tcg-status">
 					{statusBadges(mon).map(b => <span key={b.id} class={b.id} title={b.title}>{b.label}</span>)}
+				</div>}
+			{pkFx?.moveName && pkFx?.moveTag &&
+				<div
+					class={`tcg-move-banner k-${pkFx.moveTag === 'Ability' ? 'ability' : 'attack'}`}
+					aria-hidden="true"
+				>
+					<strong>{pkFx.moveTag}</strong>
+					<em>{pkFx.moveName}</em>
 				</div>}
 			{pkFx?.status != null && <StatusBurst kind={pkFx.status} />}
 			{pkFx?.element && <TypeHit type={pkFx.element} tick={pkFx.tick} />}
@@ -3921,6 +3996,7 @@ export class TcgBoard extends preact.Component<{
 	};
 
 	choose = (a: TcgAction) => {
+		if (this.props.snapshot.you == null) return;
 		// The previous request's buttons stay up while its animation plays.
 		if (this.props.waiting) {
 			if (this.state.drag) this.setState({ drag: null });
@@ -3976,6 +4052,7 @@ export class TcgBoard extends preact.Component<{
 	}
 
 	acts(): TcgAction[] {
+		if (this.props.snapshot.you == null) return [];
 		// The request beat is when the new choices exist. Until then, keep the previous list.
 		if (this.foldedRequest && this.boardSnap) return this.boardSnap.actions || [];
 		return this.props.snapshot.actions || [];
@@ -3986,6 +4063,7 @@ export class TcgBoard extends preact.Component<{
 	}
 
 	startHandDrag = (i: number, cardId: string, e: PointerEvent) => {
+		if (this.props.snapshot.you == null) return;
 		if (e.button != null && e.button !== 0) return;
 		e.preventDefault();
 		this.dragMoved = false;
@@ -4445,7 +4523,8 @@ export class TcgBoard extends preact.Component<{
 		const benchSize = snap.format?.benchSize || Math.max(me.bench.length, foe.bench.length, 3);
 		// Fan keeps pre-batch indexes so a click still matches the server hand.
 		// Played cards leave on their beat; drawn and prize cards join on theirs.
-		const myHand = handFan(handIds(snap.players[meIndex]?.hand), me.hand);
+		const myHand = snap.you != null ?
+			handFan(handIds(snap.players[meIndex]?.hand), me.hand) : null;
 		const shuffleFx = this.state.fx?.kind === 'shuffleHand' ? this.state.fx : null;
 		const shufflingMine = !!(shuffleFx && shuffleFx.seat === meIndex);
 		const shufflingFoe = !!(shuffleFx && shuffleFx.seat !== meIndex);
@@ -4461,7 +4540,7 @@ export class TcgBoard extends preact.Component<{
 		const ahead = view !== snap;
 		const turnSeat = typeof view.turn === 'number' ? view.turn : null;
 		const turnOwner = turnSeat != null ? view.players[turnSeat] : null;
-		const yourTurn = !this.props.ended && !this.props.waiting && allActs.length > 0;
+		const yourTurn = snap.you != null && !this.props.ended && !this.props.waiting && allActs.length > 0;
 		// While beats are playing, the badge follows the turn event instead of leftover actions.
 		const isMyTurnSeat = snap.you != null && snap.you === meIndex && (
 			ahead ? (view.status === 'playing' && turnSeat === snap.you) :
@@ -4918,7 +4997,7 @@ export class TcgBoard extends preact.Component<{
 					<i class="fa fa-fast-forward" aria-hidden></i> Skip to end
 				</button>
 			</div>}
-			<div class="tcg-live-controls">
+			{snap.you != null && <div class="tcg-live-controls">
 				{(this.state.selectedHand != null || this.state.energyPick || this.state.retreatPick || this.state.menuSlot != null) &&
 					<button type="button" class="tcg-cancel" onClick={this.clearSel}>Cancel</button>}
 				{orphanActs.map((a, i) =>
@@ -4943,7 +5022,7 @@ export class TcgBoard extends preact.Component<{
 				>
 					End<br />Turn
 				</button>}
-			</div>
+			</div>}
 
 			{this.state.menuSlot != null && (() => {
 				const slot = this.state.menuSlot;

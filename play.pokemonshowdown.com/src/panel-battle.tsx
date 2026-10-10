@@ -25,7 +25,7 @@ import { Net } from "./client-connection";
 import { BattleLog } from "./battle-log";
 import {
 	TcgBoard, isTcgBattleId, chatEntryForEvent, chatHtmlForEntry, noteTcgMons, loadPaperNames, applyTcgEvents,
-	normalizeTcgEnergy,
+	filterTcgEventsForViewer, normalizeTcgEnergy, scrubTcgSpectatorView,
 	type TcgAction, type TcgEvent, type TcgPokemonView, type TcgSnapshot,
 } from "./battle-tcg";
 
@@ -258,7 +258,8 @@ export class BattleRoom extends ChatRoom {
 
 		if (!this.choices || this.choices.isDone()) body = '';
 
-		if (this.tcgMode && this.tcgSnapshot && !this.tcgWait && this.tcgSnapshot.actions?.length && !this.tcgEnded) {
+		if (this.tcgMode && this.tcgSide != null && this.tcgSnapshot && !this.tcgWait &&
+			this.tcgSnapshot.actions?.length && !this.tcgEnded) {
 			title = "Your turn!";
 			body = "Choose a TCG action" + oName;
 		}
@@ -613,6 +614,7 @@ export class BattleRoom extends ChatRoom {
 			if (item.snapshot.format) this.tcgFormat = item.snapshot.format;
 			else if (this.tcgFormat) item.snapshot = { ...item.snapshot, format: this.tcgFormat };
 			if (item.actions) item.snapshot = { ...item.snapshot, actions: item.actions };
+			if (item.snapshot.you == null) item.snapshot = scrubTcgSpectatorView(item.snapshot);
 			normalizeTcgEnergy(item.snapshot);
 			this.tcgSnapshot = item.snapshot;
 			if (item.snapshot.status === 'over') {
@@ -1245,6 +1247,7 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		if (data.snapshot) {
 			if (data.snapshot.format) room.tcgFormat = data.snapshot.format;
 			else if (room.tcgFormat) data.snapshot = { ...data.snapshot, format: room.tcgFormat };
+			if (data.snapshot.you == null) data.snapshot = scrubTcgSpectatorView(data.snapshot);
 		}
 		if (data.snapshot && !data.snapshot.format?.energyZone &&
 			!data.snapshot.players?.some(p => p?.energyZone)) {
@@ -1266,7 +1269,11 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 				name: data.snapshot.players[1].name,
 			};
 		}
-		const actions = data.actions ?? data.snapshot?.actions;
+		const spectator = data.kind === 'watch' || data.snapshot?.you == null;
+		const actions = spectator ?
+			(data.actions ?? data.snapshot?.actions ?? []) :
+			(data.actions ?? data.snapshot?.actions);
+		const events = filterTcgEventsForViewer(data.events, data.snapshot?.you ?? null);
 		const wait = data.wait != null ? data.wait :
 			(actions ? !actions.length : (data.snapshot ? !data.snapshot.actions?.length : undefined));
 		const ended = data.snapshot?.status === 'over' ||
@@ -1283,16 +1290,16 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		}
 		// The server may send the same batch twice (the opening |tcg| payload is repeated);
 		// animate each event once. The silent |request| echo never animates, so it is not counted.
-		const fresh = skipFx ? data.events : data.events?.filter(ev => {
+		const fresh = skipFx ? events : events?.filter(ev => {
 			if (typeof ev.seq !== 'number') return true;
 			if (ev.seq <= room.tcgSeqSeen) return false;
 			room.tcgSeqSeen = ev.seq;
 			return true;
 		});
-		const events = this.hideSetupPlacements(data.snapshot, fresh);
+		const setupEvents = this.hideSetupPlacements(data.snapshot, fresh);
 		room.enqueueTcg({
 			snapshot: data.snapshot,
-			events,
+			events: setupEvents,
 			actions,
 			wait,
 			animate: !skipFx && !!events?.length && !PS.prefs.noanim,
@@ -1346,6 +1353,7 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 	}
 	sendTcgAction = (action: TcgAction) => {
 		const room = this.props.room;
+		if (room.tcgSide == null || room.tcgSnapshot?.you == null) return;
 		room.tcgWait = true;
 		room.sendDirect(`/choose ${JSON.stringify(action)}`);
 		room.update(null);
@@ -2450,7 +2458,7 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 		const controls = this.renderTcgControls();
 
 		// Phone / narrow: board fills the room; toggle to chat (same idea as gen battles)
-		const isPhone = room.width < 640;
+		const isPhone = room.width < 640 || room.height < 500;
 		if (isPhone) {
 			const showingChat = this.mobileChatShown;
 			return <PSPanelWrapper room={room} focusClick noScroll="hidden">
