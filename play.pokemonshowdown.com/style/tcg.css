@@ -132,10 +132,14 @@
 	flex: 1;
 }
 .tcg-player.me.dock {
+	position: absolute;
+	right: 6px;
+	bottom: 4px;
 	flex: 0 0 auto;
 	padding: 0 6px 2px 4px;
-	align-self: flex-end;
+	align-self: auto;
 	z-index: 9;
+	pointer-events: auto;
 }
 .tcg-player.me.dock .tcg-player-meta { align-items: flex-end; }
 .tcg-player.me.dock .tcg-name { max-width: 160px; }
@@ -996,10 +1000,11 @@
 	box-shadow: 0 4px 10px rgba(0, 0, 0, 0.45);
 }
 .tcg-dock {
+	--tcg-dock-chip: 112px;
 	display: flex;
 	align-items: flex-end;
-	justify-content: flex-end;
-	gap: 8px;
+	justify-content: center;
+	gap: 0;
 	flex: 0 0 auto;
 	z-index: 4;
 	padding: 10px 8px 4px;
@@ -1008,6 +1013,7 @@
 	background: transparent;
 	border: 0;
 	box-shadow: none;
+	position: relative;
 }
 .tcg-table > .tcg-dock {
 	/* keep above arena; mobile overrides to absolute bottom */
@@ -1016,11 +1022,15 @@
 }
 .tcg-hand-mine {
 	height: 52px;
-	padding: 0 6px;
+	/* Equal side inset so the fan centers on the board, not left of the name chip */
+	padding: 0 var(--tcg-dock-chip);
+	box-sizing: border-box;
 	flex: 1 1 auto;
+	width: 100%;
 	z-index: 4;
 	overflow: hidden;
 	align-items: flex-start;
+	justify-content: center;
 	min-width: 0;
 	max-width: none;
 	margin: 0;
@@ -3299,6 +3309,69 @@ span.tcg-card-backface {
   50% { width: 42px; opacity: 1; }
 }
 
+/* Attack / Ability name — sits on the card face, slides up and fades out */
+.tcg-mon .tcg-move-banner {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 28%;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 5px 6px 6px;
+  border-radius: 7px;
+  background: linear-gradient(180deg, rgba(10, 14, 28, 0.92), rgba(6, 10, 20, 0.96));
+  border: 1px solid rgba(255, 220, 140, 0.55);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  animation: tcg-move-banner-rise 1.35s cubic-bezier(.22, .72, .2, 1) forwards;
+}
+.tcg-mon .tcg-move-banner.k-ability {
+  border-color: rgba(140, 190, 255, 0.6);
+  background: linear-gradient(180deg, rgba(12, 22, 44, 0.94), rgba(8, 14, 28, 0.96));
+}
+.tcg-mon .tcg-move-banner strong {
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #f5d878;
+  opacity: 0.9;
+  line-height: 1.1;
+}
+.tcg-mon .tcg-move-banner.k-ability strong {
+  color: #9ec4ff;
+}
+.tcg-mon .tcg-move-banner em {
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.15;
+  color: #fff8e8;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+  max-width: 100%;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.tcg-zone.tcg-bench .tcg-mon .tcg-move-banner {
+  bottom: 22%;
+  padding: 3px 4px 4px;
+  border-radius: 5px;
+}
+.tcg-zone.tcg-bench .tcg-mon .tcg-move-banner strong { font-size: 6px; }
+.tcg-zone.tcg-bench .tcg-mon .tcg-move-banner em { font-size: 8px; }
+@keyframes tcg-move-banner-rise {
+  0% { opacity: 0; transform: translateY(10px); }
+  12% { opacity: 1; transform: translateY(0); }
+  55% { opacity: 1; transform: translateY(-8px); }
+  100% { opacity: 0; transform: translateY(-22px); }
+}
+
 /* Persistent mid-board win / draw banner */
 .tcg-win-banner {
   position: absolute;
@@ -3808,7 +3881,7 @@ span.tcg-card-backface {
 	.tcg-zone.tcg-bench .tcg-card-sm,
 	.tcg-zone.tcg-bench .tcg-mon.empty { width: 50px; height: 70px; }
 	.tcg-avatar { width: 30px; height: 30px; font-size: 11pt; }
-	.tcg-prize { width: 32px; height: 20px; }
+	.tcg-prize { width: 36px; height: 28px; min-width: 36px; min-height: 28px; }
 	.tcg-card-lg { width: 80px; height: 110px; }
 	.tcg-card-md { width: 68px; height: 94px; }
 	.tcg-card-sm { width: 50px; height: 70px; }
@@ -3899,15 +3972,22 @@ span.tcg-card-backface {
 		background: linear-gradient(180deg, transparent 0%, rgba(4, 10, 24, 0.55) 28%, rgba(4, 10, 24, 0.82) 100%);
 		pointer-events: none;
 	}
+	.tcg-dock {
+		--tcg-dock-chip: 104px;
+		justify-content: center;
+	}
 	.tcg-dock .tcg-hand-mine {
 		pointer-events: auto;
 		height: 56px;
-		padding: 0 8px;
-		max-width: calc(100% - 96px);
+		padding: 0 var(--tcg-dock-chip);
+		max-width: none;
+		width: 100%;
 	}
 	.tcg-dock .tcg-player.me.dock {
 		pointer-events: auto;
-		padding-bottom: env(safe-area-inset-bottom, 0px);
+		right: 4px;
+		bottom: env(safe-area-inset-bottom, 0px);
+		padding-bottom: 2px;
 	}
 	.tcg-dock .tcg-player.me.dock .tcg-name { max-width: 88px; }
 	.tcg-hand-mine .tcg-card-md {
@@ -4493,7 +4573,12 @@ span.tcg-card-backface {
 		gap: 6px;
 		grid-template-rows: auto auto;
 	}
-	.tcg-zone.tcg-active-spot { height: auto; }
+	.tcg-zone.tcg-active-spot { height: auto; min-height: 72px; flex-shrink: 0; }
+	.tcg-zone.tcg-active-spot .tcg-card-lg,
+	.tcg-zone.tcg-active-spot .tcg-mon.empty.active {
+		min-height: 58px;
+		max-height: none;
+	}
 	.tcg-side { justify-content: center; gap: 8px; }
 	.tcg-half.foe .tcg-side.left,
 	.tcg-half.foe .tcg-side.right,
@@ -4510,7 +4595,9 @@ span.tcg-card-backface {
 	.tcg-wait-banner {
 		top: auto;
 		bottom: 72px;
-		transform: none;
+		left: 50%;
+		right: auto;
+		transform: translateX(-50%);
 		max-width: min(220px, 70%);
 		z-index: 16;
 		animation: none;
