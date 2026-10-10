@@ -201,7 +201,11 @@ export class BattleRoom extends ChatRoom {
 		replay?: boolean,
 		markEnded?: boolean,
 		winner?: string | null,
+		/** `watch` is the public stream; `you` is the private sideupdate. */
+		kind?: string,
 	}[] = [];
+	/** True once a private `kind:"you"` payload has arrived — ignore public watch forever after. */
+	tcgGotYou = false;
 	/** Every payload this battle, so Replay can play it again. */
 	tcgHistory: BattleRoom['tcgQueue'] = [];
 	tcgPaused = false;
@@ -299,6 +303,7 @@ export class BattleRoom extends ChatRoom {
 		this.tcgWinner = null;
 		this.tcgViewpoint = 0;
 		this.tcgSide = null;
+		this.tcgGotYou = false;
 		this.tcgKickingInactive = false;
 		this.tcgTotalTimeLeft = 0;
 		this.tcgReplayMode = false;
@@ -488,6 +493,7 @@ export class BattleRoom extends ChatRoom {
 		this.tcgReplayMode = true;
 		this.tcgEnded = true;
 		this.tcgSide = null;
+		this.tcgGotYou = false;
 		this.tcgFormat = replay.snapshot.format;
 		this.tcgWinner = data.winner || null;
 		this.tcgP1 = { id: toID(data.p1 || ''), name: data.p1 || 'Player 1' };
@@ -602,21 +608,49 @@ export class BattleRoom extends ChatRoom {
 			this.tcgSnapshot && item.events?.length ?
 				applyTcgEvents(this.tcgSnapshot, item.events, item.actions) : null
 		);
-		if (!this.tcgSnapshot && item.snapshot) this.tcgSnapshot = item.snapshot;
+		// Never paint a public watch board onto a seated player while their private payload is pending.
+		if (!this.tcgSnapshot && item.snapshot && !(item.kind === 'watch' && this.tcgIsSeatedPlayer())) {
+			this.tcgSnapshot = item.snapshot;
+		}
 		this.tcgEvents = item.events || [];
 		this.tcgFxKey++;
 		this.tcgWait = true;
 		this.update(null);
 	}
+	/** True when this login is (or will be) a seated player — never paint public watch over them. */
+	tcgIsSeatedPlayer(): boolean {
+		if (this.tcgGotYou || this.tcgSide != null || this.tcgSnapshot?.you != null) return true;
+		const me = PS.user?.userid;
+		if (!me || me.startsWith('guest')) return false;
+		const p1 = toID(this.tcgP1.id || this.tcgP1.name);
+		const p2 = toID(this.tcgP2.id || this.tcgP2.name);
+		return !!((p1 && p1 === me) || (p2 && p2 === me));
+	}
+	/** Drop queued public watch payloads once a private seat board exists. */
+	dropTcgWatchQueue() {
+		this.tcgQueue = this.tcgQueue.filter(item => item.kind !== 'watch');
+	}
 	/** Apply the board for one payload. Logs were already written beat-by-beat when `paced` is set. */
 	commitTcg(item: BattleRoom['tcgQueue'][number], paced: boolean) {
+		// A private board must never be replaced by a later public watch commit.
+		if (item.kind === 'watch' && (this.tcgGotYou || this.tcgSide != null || this.tcgSnapshot?.you != null)) {
+			return;
+		}
 		if (item.snapshot) {
 			if (item.snapshot.format) this.tcgFormat = item.snapshot.format;
 			else if (this.tcgFormat) item.snapshot = { ...item.snapshot, format: this.tcgFormat };
 			if (item.actions) item.snapshot = { ...item.snapshot, actions: item.actions };
-			if (item.snapshot.you == null) item.snapshot = scrubTcgSpectatorView(item.snapshot);
+			if (item.snapshot.you == null) {
+				// Don't scrub-overwrite a seated private board with a spectator shell.
+				if (this.tcgSnapshot?.you != null || this.tcgGotYou) return;
+				item.snapshot = scrubTcgSpectatorView(item.snapshot);
+			}
 			normalizeTcgEnergy(item.snapshot);
 			this.tcgSnapshot = item.snapshot;
+			if (item.snapshot.you != null) {
+				this.tcgSide = item.snapshot.you as 0 | 1;
+				this.tcgGotYou = true;
+			}
 			if (item.snapshot.status === 'over') {
 				this.tcgEnded = true;
 				if (this.tcgWinner == null && item.snapshot.winner != null) {
@@ -1239,24 +1273,6 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 	}, skipFx = false) {
 		const room = this.props.room;
 		if (!data) return;
-		// A seated player already has a private `you` payload. A later public watch
-		// has no actions and would wipe choose-first (and every other choice).
-		if (data.kind === 'watch' && (room.tcgSide != null || room.tcgSnapshot?.you != null)) {
-			return;
-		}
-		if (data.snapshot) {
-			if (data.snapshot.format) room.tcgFormat = data.snapshot.format;
-			else if (room.tcgFormat) data.snapshot = { ...data.snapshot, format: room.tcgFormat };
-			if (data.snapshot.you == null) data.snapshot = scrubTcgSpectatorView(data.snapshot);
-		}
-		if (data.snapshot && !data.snapshot.format?.energyZone &&
-			!data.snapshot.players?.some(p => p?.energyZone)) {
-			loadPaperNames();
-		}
-		if (data.snapshot?.you != null) {
-			room.tcgSide = data.snapshot.you as 0 | 1;
-			room.tcgViewpoint = room.tcgSide;
-		}
 		if (data.snapshot?.players?.[0]?.name) {
 			room.tcgP1 = {
 				id: toID(data.snapshot.players[0].id || data.snapshot.players[0].name),
@@ -1269,11 +1285,52 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 				name: data.snapshot.players[1].name,
 			};
 		}
-		const spectator = data.kind === 'watch' || data.snapshot?.you == null;
-		const actions = spectator ?
-			(data.actions ?? data.snapshot?.actions ?? []) :
-			(data.actions ?? data.snapshot?.actions);
-		const events = filterTcgEventsForViewer(data.events, data.snapshot?.you ?? null);
+		// Public `watch` is broadcast on `update` before the private `you` sideupdate.
+		// Applying it first paints count-only hands / no actions and can stick a seated
+		// player in spectator mode until they rejoin.
+		if (data.kind === 'watch' && room.tcgIsSeatedPlayer()) {
+			return;
+		}
+		if (data.kind === 'you') {
+			room.tcgGotYou = true;
+			// Abort an in-flight public watch beat before dropping the rest of the watch queue.
+			if (room.tcgPlaying && room.tcgQueue[0]?.kind === 'watch') {
+				room.tcgHalt++;
+				room.tcgPlaying = false;
+				room.tcgQueue.shift();
+				room.tcgFxSnapshot = null;
+				room.tcgEvents = [];
+			}
+			room.dropTcgWatchQueue();
+		}
+		if (data.snapshot) {
+			if (data.snapshot.format) room.tcgFormat = data.snapshot.format;
+			else if (room.tcgFormat) data.snapshot = { ...data.snapshot, format: room.tcgFormat };
+			// Only scrub true spectator snapshots — never a missing field on soft `you` batches.
+			if (data.kind === 'watch' || (data.kind !== 'you' && data.snapshot.you == null)) {
+				data.snapshot = scrubTcgSpectatorView(data.snapshot);
+			}
+		}
+		if (data.snapshot && !data.snapshot.format?.energyZone &&
+			!data.snapshot.players?.some(p => p?.energyZone)) {
+			loadPaperNames();
+		}
+		if (data.snapshot?.you != null) {
+			room.tcgSide = data.snapshot.you as 0 | 1;
+			room.tcgViewpoint = room.tcgSide;
+			room.tcgGotYou = true;
+		}
+		// Soft `you` batches omit snapshot; `undefined == null` must NOT mean spectator.
+		// That bug stripped draw/deal ids and left seated players with card backs only.
+		const viewerSeat: 0 | 1 | null = data.kind === 'watch' ? null :
+			(data.snapshot?.you ?? room.tcgSide ?? room.tcgSnapshot?.you ?? null);
+		const seatedPayload = data.kind === 'you' || viewerSeat != null;
+		const actions = seatedPayload ?
+			(data.actions ?? data.snapshot?.actions) :
+			(data.actions ?? data.snapshot?.actions ?? []);
+		const events = seatedPayload ?
+			(viewerSeat != null ? filterTcgEventsForViewer(data.events, viewerSeat) : data.events) :
+			filterTcgEventsForViewer(data.events, null);
 		const wait = data.wait != null ? data.wait :
 			(actions ? !actions.length : (data.snapshot ? !data.snapshot.actions?.length : undefined));
 		const ended = data.snapshot?.status === 'over' ||
@@ -1306,7 +1363,12 @@ class BattlePanel extends PSRoomPanel<BattleRoom> {
 			silent: skipFx,
 			markEnded: ended || undefined,
 			winner,
+			kind: data.kind,
 		});
+		// Private seat board is authoritative — jump past any leftover watch animation.
+		if (data.kind === 'you' && data.snapshot && room.tcgPlaying) {
+			room.skipTcgToEnd();
+		}
 	}
 	/**
 	 * Official rules: opening Active and Bench Pokémon are placed face down and only
